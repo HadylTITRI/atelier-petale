@@ -1,29 +1,56 @@
 /**
  * Panier du client, gardé dans le navigateur.
- * On n'y stocke que l'identifiant et la quantité : nom et prix viennent toujours du catalogue.
+ * On n'y stocke que l'identifiant du produit, la quantité et les options choisies :
+ * nom et prix viennent toujours du catalogue et de config.js.
+ *
+ * Un même bouquet avec des options différentes forme des lignes distinctes
+ * (ex. « bouquet + initiales AM » et « bouquet nu »).
  */
 import { local } from "./utils.js";
+import { normalizeSelection, optionsTotalCents, configKey } from "./options.js";
 
 const STORAGE_KEY = "ap_cart";
 
 class Cart {
-  #lines = local.get(STORAGE_KEY, []);   // [{ productId, qty }]
+  #lines = local.get(STORAGE_KEY, []);   // [{ productId, qty, options: [{ id, value }] }]
   #products = new Map();                 // productId → produit du catalogue
   #listeners = new Set();
 
   /** Met à jour le catalogue connu et retire les articles qui ne sont plus en vente. */
   setCatalog(products) {
     this.#products = new Map(products.map((p) => [p.id, p]));
-    this.#lines = this.#lines.filter((line) => this.#products.has(line.productId));
+    this.#lines = this.#lines.filter((line) => this.#products.has(line.productId) && this.#resolve(line));
     this.#commit();
   }
 
-  /** Lignes enrichies avec les infos produit, prêtes à afficher. */
+  /** Options validées d'une ligne, ou null si elles ne sont plus valides (option retirée de la config…). */
+  #resolve(line) {
+    try {
+      return normalizeSelection(line.options ?? []);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Lignes enrichies avec les infos produit et options, prêtes à afficher. */
   get lines() {
-    return this.#lines.filter((line) => this.#products.has(line.productId)).map((line) => {
+    const lines = [];
+    for (const line of this.#lines) {
       const product = this.#products.get(line.productId);
-      return { ...line, product, totalCents: product.priceCents * line.qty };
-    });
+      const options = this.#resolve(line);
+      if (!product || !options) continue;
+      const unitCents = product.priceCents + optionsTotalCents(options);
+      lines.push({
+        key: configKey(line.productId, options),
+        productId: line.productId,
+        qty: line.qty,
+        product,
+        options,
+        unitCents,
+        totalCents: unitCents * line.qty,
+      });
+    }
+    return lines;
   }
 
   get count() {
@@ -38,17 +65,21 @@ class Cart {
     return this.#lines.length === 0;
   }
 
-  add(productId) {
-    const line = this.#lines.find((l) => l.productId === productId);
-    if (line) line.qty += 1;
-    else this.#lines.push({ productId, qty: 1 });
+  /** Ajoute un bouquet avec ses options ([{ id, value }]). Lève une erreur si une option est invalide. */
+  add(productId, options = [], qty = 1) {
+    const clean = normalizeSelection(options).map(({ id, value }) => ({ id, value }));
+    const key = configKey(productId, clean);
+    const line = this.#lines.find((l) => configKey(l.productId, this.#resolve(l) ?? []) === key);
+    if (line) line.qty = Math.min(line.qty + qty, 99);
+    else this.#lines.push({ productId, qty, options: clean });
     this.#commit();
   }
 
-  setQty(productId, qty) {
+  setQty(key, qty) {
+    const keyOf = (l) => configKey(l.productId, this.#resolve(l) ?? []);
     this.#lines = qty > 0
-      ? this.#lines.map((l) => (l.productId === productId ? { ...l, qty: Math.min(qty, 99) } : l))
-      : this.#lines.filter((l) => l.productId !== productId);
+      ? this.#lines.map((l) => (keyOf(l) === key ? { ...l, qty: Math.min(qty, 99) } : l))
+      : this.#lines.filter((l) => keyOf(l) !== key);
     this.#commit();
   }
 

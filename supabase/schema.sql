@@ -15,7 +15,7 @@ USE atelier_petale;
 CREATE TABLE IF NOT EXISTS products (
   id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
   name         VARCHAR(80)  NOT NULL,
-  category     ENUM('bouquets', 'nails', 'autres') NOT NULL,
+  category     ENUM('bouquets') NOT NULL DEFAULT 'bouquets',
   price_cents  INT UNSIGNED NOT NULL,                 -- 3990 = 39,90 €
   description  VARCHAR(300) NOT NULL DEFAULT '',
   image_url    VARCHAR(500) NOT NULL DEFAULT '',
@@ -67,20 +67,25 @@ CREATE TABLE IF NOT EXISTS orders (
   CONSTRAINT chk_orders_total CHECK (total_cents = subtotal_cents + delivery_cents)
 ) ENGINE = InnoDB;
 
--- Articles d'une commande. Le nom et le prix sont copiés au moment de l'achat :
--- si le produit change de prix ou est supprimé, la commande reste exacte.
+-- Articles d'une commande. Le nom, le prix et les options (initiales, papillons,
+-- ruban…) sont copiés au moment de l'achat : si le produit change de prix ou est
+-- supprimé, la commande reste exacte. Le prix d'une ligne est
+-- (unit_price_cents + options_cents) × quantity.
 CREATE TABLE IF NOT EXISTS order_items (
   id                INT UNSIGNED      NOT NULL AUTO_INCREMENT,
   order_id          INT UNSIGNED      NOT NULL,
   product_id        INT UNSIGNED      NULL,
   product_name      VARCHAR(80)       NOT NULL,
-  unit_price_cents  INT UNSIGNED      NOT NULL,
+  unit_price_cents  INT UNSIGNED      NOT NULL,                 -- prix du bouquet seul
+  options_cents     INT UNSIGNED      NOT NULL DEFAULT 0,       -- total des options, par bouquet
+  options           JSON              NULL,                     -- ex. [{"id":"initiales","label":"Initiales","value":"AM","priceCents":350}]
   quantity          SMALLINT UNSIGNED NOT NULL,
   PRIMARY KEY (id),
   KEY idx_order_items_order (order_id),
   CONSTRAINT fk_order_items_order   FOREIGN KEY (order_id)   REFERENCES orders (id)   ON DELETE CASCADE,
   CONSTRAINT fk_order_items_product FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE SET NULL,
-  CONSTRAINT chk_order_items_qty    CHECK (quantity BETWEEN 1 AND 99)
+  CONSTRAINT chk_order_items_qty    CHECK (quantity BETWEEN 1 AND 99),
+  CONSTRAINT chk_order_items_opts   CHECK (options IS NULL OR JSON_VALID(options))
 ) ENGINE = InnoDB;
 
 -- ---------- Administrateurs -------------------------------------------------
@@ -106,9 +111,8 @@ FROM (
          'Pivoines roses de saison et feuillage d''eucalyptus, environ 40 cm.' AS description
   UNION ALL SELECT 'Bouquet champêtre', 'bouquets', 3490, 'Fleurs des champs du moment, emballage kraft.'
   UNION ALL SELECT '12 roses rouges', 'bouquets', 5290, 'Douze roses rouges longues tiges, ruban satin.'
-  UNION ALL SELECT 'Press-on nude', 'nails', 2490, '24 faux ongles forme amande, colle et lime incluses. Taille à préciser.'
-  UNION ALL SELECT 'Set French manucure', 'nails', 2790, 'Press-on French classique, forme carrée, finition brillante.'
-  UNION ALL SELECT 'Coffret bougie & chocolats', 'autres', 2990, 'Bougie parfumée à la pivoine et ballotin de chocolats artisanaux.'
+  UNION ALL SELECT 'Bouquet de tulipes', 'bouquets', 3190, 'Quinze tulipes assorties, papier kraft et ruban.'
+  UNION ALL SELECT 'Bouquet pastel', 'bouquets', 3990, 'Roses, lisianthus et gypsophile dans des tons poudrés.'
 ) AS sample
 WHERE NOT EXISTS (SELECT 1 FROM products);
 
@@ -121,8 +125,9 @@ WHERE NOT EXISTS (SELECT 1 FROM products);
 --   WHERE status IN ('nouvelle', 'preparation', 'livraison')
 --   ORDER BY created_at DESC;
 
--- Détail des articles d'une commande :
---   SELECT product_name, quantity, unit_price_cents * quantity AS line_total_cents
+-- Détail des articles d'une commande (options comprises) :
+--   SELECT product_name, options, quantity,
+--          (unit_price_cents + options_cents) * quantity AS line_total_cents
 --   FROM order_items WHERE order_id = ?;
 
 -- Livraisons du jour :
@@ -132,3 +137,11 @@ WHERE NOT EXISTS (SELECT 1 FROM products);
 -- Chiffre d'affaires (hors commandes annulées) :
 --   SELECT SUM(total_cents) / 100 AS chiffre_affaires_euros
 --   FROM orders WHERE status <> 'annulee';
+-- ============================================================================
+-- Base déjà créée avec l'ancienne version du schéma ? Appliquez cette migration :
+-- ============================================================================
+--   DELETE FROM products WHERE category <> 'bouquets';
+--   ALTER TABLE products MODIFY category ENUM('bouquets') NOT NULL DEFAULT 'bouquets';
+--   ALTER TABLE order_items
+--     ADD COLUMN options_cents INT UNSIGNED NOT NULL DEFAULT 0 AFTER unit_price_cents,
+--     ADD COLUMN options JSON NULL AFTER options_cents;

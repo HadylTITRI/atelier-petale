@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nour Flower — Bouquets, nails & cadeaux</title>
-  <meta name="description" content="Bouquets frais, nails et petites attentions livrés à domicile.">
+  <title>Nour Flower — Bouquets de fleurs personnalisés</title>
+  <meta name="description" content="Bouquets de fleurs frais, personnalisables (initiales, papillons, ruban…) et livrés à domicile.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Figtree:wght@400;500;600;700&display=swap">
@@ -47,11 +47,10 @@
     <!-- ===================== Boutique ===================== -->
     <section id="view-boutique" data-view="boutique">
       <div class="page-intro">
-        <span class="eyebrow">Fleuriste &amp; onglerie · Livraison à domicile</span>
-        <h2>Bouquets frais, nails et petites attentions</h2>
-        <p>Choisissez vos articles, indiquez l'adresse de livraison et validez. Nous préparons votre commande et vous suivez son avancement dans « Mes commandes ».</p>
+        <span class="eyebrow">Fleuriste · Livraison à domicile</span>
+        <h2>Des bouquets à votre image</h2>
+        <p>Choisissez un bouquet, ajoutez vos options (initiales, prénom, papillons, ruban…), indiquez l'adresse de livraison et validez. Nous préparons votre commande et vous suivez son avancement dans « Mes commandes ».</p>
       </div>
-      <div class="chips" id="category-filter" role="group" aria-label="Catégories"></div>
       <div class="product-grid" id="product-grid" aria-live="polite"></div>
     </section>
 
@@ -122,7 +121,7 @@
                 <input id="pf-name" maxlength="80" placeholder="Bouquet de pivoines" required>
               </div>
               <div class="form-row">
-                <div class="field">
+                <div class="field" id="pf-category-field">
                   <label for="pf-category">Catégorie</label>
                   <select id="pf-category"></select>
                 </div>
@@ -159,6 +158,31 @@
       <a href="#admin">Espace admin</a>
     </div>
   </footer>
+
+  <!-- ===================== Personnalisation d'un bouquet (fenêtre) ===================== -->
+  <dialog class="modal" id="custom-dialog" aria-labelledby="custom-title">
+    <form class="form" id="custom-form" novalidate>
+      <div class="modal-head">
+        <div class="thumb" id="custom-visual"></div>
+        <div>
+          <h2 id="custom-title"></h2>
+          <p class="muted" id="custom-desc" style="margin:2px 0 0"></p>
+        </div>
+        <button class="close-btn" type="button" data-action="close-custom" aria-label="Fermer">×</button>
+      </div>
+      <div class="modal-body">
+        <fieldset id="custom-options">
+          <legend>Personnalisez votre bouquet</legend>
+        </fieldset>
+        <p class="form-error" id="custom-error" role="alert" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <div class="sum-row total"><span>Prix</span><span class="num" id="custom-total"></span></div>
+        <div class="muted num" id="custom-breakdown" style="font-size:13px"></div>
+        <button class="btn btn-primary btn-block" type="submit">Ajouter au panier</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ===================== Panier (fenêtre) ===================== -->
   <dialog class="drawer" id="cart-drawer" aria-labelledby="drawer-title">
@@ -244,7 +268,7 @@
             </div>
             <div class="field">
               <label for="co-notes">Précisions pour l'atelier</label>
-              <textarea id="co-notes" maxlength="300" placeholder="Taille des ongles, couleur préférée, allergie…"></textarea>
+              <textarea id="co-notes" maxlength="300" placeholder="Couleurs préférées, allergie au pollen…"></textarea>
             </div>
           </fieldset>
           <p class="form-error" id="checkout-error" role="alert" hidden></p>

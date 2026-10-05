@@ -4,6 +4,7 @@
  */
 import { CONFIG, STATUSES, ACTIVE_STATUSES } from "./config.js";
 import { store } from "./store/index.js";
+import { describeOption, lineUnitCents } from "./options.js";
 import {
   $, $$, escapeHtml, formatPrice, formatDate, formatDateTime, isoDay, parsePrice, toast,
   productVisual, categoryLabel, statusLabel,
@@ -179,7 +180,11 @@ function renderOrderDetail(order) {
     <div>
       <span class="eyebrow">Articles</span>
       ${order.items.map((i) => `
-        <div class="sum-row" style="margin-top:6px"><span>${i.qty} × ${escapeHtml(i.name)}</span><span class="num">${formatPrice(i.priceCents * i.qty)}</span></div>
+        <div class="order-item">
+          <div class="sum-row"><span>${i.qty} × ${escapeHtml(i.name)}</span><span class="num">${formatPrice(lineUnitCents(i) * i.qty)}</span></div>
+          ${(i.options ?? []).length ? `<ul class="line-options">${i.options.map((o) => `
+            <li><strong>${escapeHtml(describeOption(o))}</strong> <span class="num">(+${formatPrice(o.priceCents)} / bouquet)</span></li>`).join("")}</ul>` : ""}
+        </div>
       `).join("")}
       <div class="sum-row muted" style="margin-top:6px"><span>Livraison</span><span class="num">${formatPrice(order.deliveryCents)}</span></div>
       <div class="sum-row total" style="margin-top:6px"><span>Total</span><span class="num">${formatPrice(order.totalCents)}</span></div>
@@ -354,6 +359,8 @@ export function initAdmin(appHooks) {
 
   $("#pf-category").innerHTML = Object.entries(CONFIG.categories)
     .map(([id, label]) => `<option value="${id}">${escapeHtml(label)}</option>`).join("");
+  // Une seule catégorie (bouquets) : inutile d'afficher le choix.
+  if (Object.keys(CONFIG.categories).length === 1) $("#pf-category-field").hidden = true;
 
   $("#login-form").addEventListener("submit", submitLogin);
   $("#product-form").addEventListener("submit", submitProduct);

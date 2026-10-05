@@ -1,9 +1,9 @@
 # Atelier Pétale
 
-Boutique en ligne de bouquets, nails et cadeaux, avec livraison à domicile.
+Boutique en ligne de bouquets de fleurs personnalisables, avec livraison à domicile.
 Une seule application regroupe deux espaces :
 
-- **Clients** : catalogue, panier, formulaire de livraison, validation, suivi de la commande.
+- **Clients** : catalogue de bouquets, personnalisation (initiales, papillons…), panier, formulaire de livraison, validation, suivi de la commande.
 - **Administration** (après connexion) : commandes reçues en direct, changement de statut, gestion des produits.
 
 Aucune installation ni compilation : HTML, CSS et JavaScript (modules ES), sans framework.
@@ -20,6 +20,7 @@ atelier-petale/
 │   ├── shop.js              Catalogue, panier, livraison, suivi client
 │   ├── admin.js             Connexion, commandes, produits
 │   ├── cart.js              Panier
+│   ├── options.js           Options de personnalisation : validation et calcul des prix
 │   ├── utils.js             Fonctions communes (formats, sécurité, visuels)
 │   └── store/
 │       ├── index.js         Choisit la source de données selon config.js
@@ -73,6 +74,12 @@ La clé `anon` peut être publique : les règles de `schema.sql` empêchent les 
 ## 3. Mettre en ligne
 
 Le site est statique : déposez le dossier sur **Netlify** (glisser-déposer sur app.netlify.com/drop), **Vercel**, **Cloudflare Pages** ou **GitHub Pages**.
+
+## Options de personnalisation des bouquets
+
+Sur chaque bouquet, le bouton **Personnaliser** ouvre une fenêtre où le client choisit ses options avant d'ajouter au panier : initiales, prénom ou nom, papillons artificiels, ruban, emballage cadeau premium. Le prix se met à jour en direct, et le détail apparaît dans le panier, dans « Mes commandes » et dans le tableau de bord admin.
+
+Les options et leurs prix se règlent dans `bouquetOptions` (`js/config.js`) : ajouter, retirer ou renommer une option ne demande aucun autre changement. Quatre types existent : `text` (initiales, prénom), `quantity` (papillons), `choice` (couleur du ruban) et `toggle` (case à cocher). Les prix des options sont recalculés à l'enregistrement de la commande, jamais lus depuis le navigateur.
 
 ## Personnaliser
 

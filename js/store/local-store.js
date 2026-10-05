@@ -5,6 +5,7 @@
  */
 import { CONFIG, STATUSES } from "../config.js";
 import { local, uid, makeOrderCode } from "../utils.js";
+import { normalizeSelection, optionsTotalCents } from "../options.js";
 
 const KEYS = {
   products: "ap_demo_products",
@@ -16,9 +17,8 @@ const SAMPLE_PRODUCTS = [
   { name: "Bouquet de pivoines", category: "bouquets", priceCents: 4590, description: "Pivoines roses de saison et feuillage d'eucalyptus, environ 40 cm." },
   { name: "Bouquet champêtre", category: "bouquets", priceCents: 3490, description: "Fleurs des champs du moment, emballage kraft." },
   { name: "12 roses rouges", category: "bouquets", priceCents: 5290, description: "Douze roses rouges longues tiges, ruban satin." },
-  { name: "Press-on nude", category: "nails", priceCents: 2490, description: "24 faux ongles forme amande, colle et lime incluses. Taille à préciser." },
-  { name: "Set French manucure", category: "nails", priceCents: 2790, description: "Press-on French classique, forme carrée, finition brillante." },
-  { name: "Coffret bougie & chocolats", category: "autres", priceCents: 2990, description: "Bougie parfumée à la pivoine et ballotin de chocolats artisanaux." },
+  { name: "Bouquet de tulipes", category: "bouquets", priceCents: 3190, description: "Quinze tulipes assorties, papier kraft et ruban." },
+  { name: "Bouquet pastel", category: "bouquets", priceCents: 3990, description: "Roses, lisianthus et gypsophile dans des tons poudrés." },
 ];
 
 function readProducts() {
@@ -32,6 +32,9 @@ function readProducts() {
   return products;
 }
 
+/** La boutique ne vend que les catégories de config.js (les anciens produits démo sont masqués). */
+const sellable = (p) => p.category in CONFIG.categories;
+
 const readOrders = () => local.get(KEYS.orders, []);
 const writeOrders = (orders) => local.set(KEYS.orders, orders);
 
@@ -41,7 +44,7 @@ export function createLocalStore() {
   return {
     async listProducts({ includeHidden = false } = {}) {
       return readProducts()
-        .filter((p) => includeHidden || p.active)
+        .filter((p) => sellable(p) && (includeHidden || p.active))
         .sort(byCategoryThenName);
     },
 
@@ -62,16 +65,21 @@ export function createLocalStore() {
     },
 
     async placeOrder({ items, customer, address, delivery, cardMessage = "", notes = "" }) {
-      // Les prix sont relus depuis le catalogue : on ne fait pas confiance au panier.
-      const catalog = new Map(readProducts().filter((p) => p.active).map((p) => [p.id, p]));
-      const lines = items.map(({ productId, qty }) => {
+      // Prix du bouquet et prix des options sont recalculés ici : on ne fait pas confiance au panier.
+      const catalog = new Map(readProducts().filter((p) => sellable(p) && p.active).map((p) => [p.id, p]));
+      const lines = items.map(({ productId, qty, options = [] }) => {
         const product = catalog.get(productId);
         if (!product) throw new Error("Un article de votre panier n'est plus disponible.");
-        return { productId, name: product.name, priceCents: product.priceCents, qty };
+        if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw new Error("Quantité invalide dans votre panier.");
+        const chosen = normalizeSelection(options);
+        return {
+          productId, name: product.name, priceCents: product.priceCents, qty,
+          options: chosen, optionsCents: optionsTotalCents(chosen),
+        };
       });
       if (!lines.length) throw new Error("Votre panier est vide.");
 
-      const subtotalCents = lines.reduce((sum, l) => sum + l.priceCents * l.qty, 0);
+      const subtotalCents = lines.reduce((sum, l) => sum + (l.priceCents + l.optionsCents) * l.qty, 0);
       const order = {
         id: uid(),
         code: makeOrderCode(),

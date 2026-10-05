@@ -4,9 +4,10 @@
 import { CONFIG, STATUSES } from "./config.js";
 import { store } from "./store/index.js";
 import { cart } from "./cart.js";
+import { normalizeSelection, describeOption, optionsTotalCents } from "./options.js";
 import {
   $, $$, escapeHtml, formatPrice, formatDate, isoDay, local, toast,
-  productVisual, categoryArt, categoryLabel, statusLabel,
+  productVisual, categoryArt, statusLabel,
 } from "./utils.js";
 
 const MY_ORDERS_KEY = "ap_my_orders";   // numéros des commandes passées sur cet appareil
@@ -15,7 +16,6 @@ const REFRESH_MS = 20_000;
 
 const state = {
   products: [],
-  category: "all",
   status: "loading", // "loading" | "ready" | "error"
 };
 
@@ -39,11 +39,6 @@ export async function loadCatalog() {
 }
 
 function renderCatalog() {
-  const categories = [["all", "Tout"], ...Object.entries(CONFIG.categories)];
-  $("#category-filter").innerHTML = categories.map(([id, label]) => `
-    <button type="button" class="chip" data-category="${id}" aria-pressed="${state.category === id}">${escapeHtml(label)}</button>
-  `).join("");
-
   const grid = $("#product-grid");
   if (state.status === "loading") {
     grid.innerHTML = emptyState("Chargement du catalogue…");
@@ -54,10 +49,9 @@ function renderCatalog() {
     return;
   }
 
-  const visible = state.products.filter((p) => state.category === "all" || p.category === state.category);
-  grid.innerHTML = visible.length
-    ? visible.map(productCard).join("")
-    : emptyState("Aucun article ici pour l'instant", "De nouvelles créations arrivent bientôt.");
+  grid.innerHTML = state.products.length
+    ? state.products.map(productCard).join("")
+    : emptyState("Aucun bouquet pour l'instant", "De nouvelles créations arrivent bientôt.");
 }
 
 function productCard(product) {
@@ -65,14 +59,13 @@ function productCard(product) {
     <article class="product-card">
       <div class="visual">
         ${productVisual(product)}
-        <span class="tag">${escapeHtml(categoryLabel(product.category))}</span>
       </div>
       <div class="body">
         <h3>${escapeHtml(product.name)}</h3>
         <p>${escapeHtml(product.description)}</p>
         <div class="footer">
           <span class="price num">${formatPrice(product.priceCents)}</span>
-          <button class="btn btn-primary" type="button" data-action="add-to-cart" data-id="${escapeHtml(product.id)}">Ajouter</button>
+          <button class="btn btn-primary" type="button" data-action="customize" data-id="${escapeHtml(product.id)}">Personnaliser</button>
         </div>
       </div>
     </article>`;
@@ -110,20 +103,23 @@ function renderCart() {
   const summaryEl = $("#cart-summary");
 
   if (cart.isEmpty) {
-    linesEl.innerHTML = emptyState("Votre panier est vide", "Ajoutez un bouquet, des nails ou un cadeau depuis la boutique.");
+    linesEl.innerHTML = emptyState("Votre panier est vide", "Choisissez un bouquet dans la boutique et personnalisez-le.");
     summaryEl.innerHTML = `<button class="btn btn-block" type="button" data-action="close-cart">Continuer mes achats</button>`;
     return;
   }
 
-  linesEl.innerHTML = cart.lines.map(({ product, qty, totalCents }) => `
+  linesEl.innerHTML = cart.lines.map(({ key, product, qty, options, totalCents }) => `
     <div class="cart-line">
       <div class="thumb">${productVisual(product, 44)}</div>
       <div>
         <strong>${escapeHtml(product.name)}</strong>
+        ${options.length ? `<ul class="line-options">${options.map((o) => `
+          <li>${escapeHtml(describeOption(o))} <span class="num">(+${formatPrice(o.priceCents)})</span></li>`).join("")}
+        </ul>` : ""}
         <div class="qty">
-          <button type="button" data-action="qty-minus" data-id="${escapeHtml(product.id)}" aria-label="Retirer un ${escapeHtml(product.name)}">−</button>
+          <button type="button" data-action="qty-minus" data-key="${escapeHtml(key)}" aria-label="Retirer un ${escapeHtml(product.name)}">−</button>
           <span class="num">${qty}</span>
-          <button type="button" data-action="qty-plus" data-id="${escapeHtml(product.id)}" aria-label="Ajouter un ${escapeHtml(product.name)}">+</button>
+          <button type="button" data-action="qty-plus" data-key="${escapeHtml(key)}" aria-label="Ajouter un ${escapeHtml(product.name)}">+</button>
         </div>
       </div>
       <strong class="num">${formatPrice(totalCents)}</strong>
@@ -137,9 +133,112 @@ function renderCart() {
     <button class="btn btn-primary btn-block" type="button" data-action="go-to-delivery">Passer à la livraison</button>`;
 }
 
-function changeQty(productId, delta) {
-  const line = cart.lines.find((l) => l.productId === productId);
-  if (line) cart.setQty(productId, line.qty + delta);
+function changeQty(key, delta) {
+  const line = cart.lines.find((l) => l.key === key);
+  if (line) cart.setQty(key, line.qty + delta);
+}
+
+/* ==========================================================================
+   Personnalisation d'un bouquet (fenêtre : options → ajout au panier)
+   ========================================================================== */
+
+let customizing = null; // bouquet en cours de personnalisation
+
+const optionPrice = (def) =>
+  def.type === "quantity" ? `+${formatPrice(def.unitPriceCents)} / unité` : `+${formatPrice(def.priceCents)}`;
+
+/** Une option du formulaire : libellé + prix, puis le champ adapté à son type. */
+function optionField(def) {
+  const id = `opt-${def.id}`;
+  const label = escapeHtml(def.label);
+  let control = "";
+
+  if (def.type === "text") {
+    control = `<input id="${id}" data-option="${def.id}" maxlength="${def.maxLength}" placeholder="${escapeHtml(def.placeholder ?? "")}" autocomplete="off">`;
+  } else if (def.type === "choice") {
+    control = `<select id="${id}" data-option="${def.id}"><option value="">Sans</option>${
+      def.choices.map((c) => `<option>${escapeHtml(c)}</option>`).join("")}</select>`;
+  } else if (def.type === "toggle") {
+    control = `<label class="checkbox"><input type="checkbox" id="${id}" data-option="${def.id}"> Ajouter</label>`;
+  } else if (def.type === "quantity") {
+    control = `
+      <div class="qty">
+        <button type="button" data-step="-1" data-target="${id}" aria-label="Moins de ${label.toLowerCase()}">−</button>
+        <span class="num" id="${id}-out">0</span>
+        <button type="button" data-step="1" data-target="${id}" aria-label="Plus de ${label.toLowerCase()}">+</button>
+        <input type="hidden" id="${id}" data-option="${def.id}" value="0">
+      </div>`;
+  }
+
+  return `
+    <div class="option">
+      <div class="option-head"><label for="${id}">${label}</label><span class="price-tag num">${optionPrice(def)}</span></div>
+      ${control}
+      ${def.help ? `<span class="hint">${escapeHtml(def.help)}</span>` : ""}
+    </div>`;
+}
+
+/** Lit les options remplies dans la fenêtre : [{ id, value }]. */
+function readSelection() {
+  return (CONFIG.bouquetOptions ?? []).map((def) => {
+    const input = $(`#opt-${def.id}`);
+    return { id: def.id, value: def.type === "toggle" ? input.checked : input.value };
+  });
+}
+
+/** Met à jour le prix affiché ; renvoie la sélection validée, ou null si une option est invalide. */
+function refreshCustomTotal() {
+  const error = $("#custom-error");
+  let options;
+  try {
+    options = normalizeSelection(readSelection());
+    error.hidden = true;
+  } catch (e) {
+    error.textContent = e.message;
+    error.hidden = false;
+    return null;
+  }
+  const extras = optionsTotalCents(options);
+  $("#custom-total").textContent = formatPrice(customizing.priceCents + extras);
+  $("#custom-breakdown").textContent = extras
+    ? `Bouquet ${formatPrice(customizing.priceCents)} + options ${formatPrice(extras)}`
+    : "";
+  return options;
+}
+
+function openCustomize(productId) {
+  const product = state.products.find((p) => p.id === productId);
+  if (!product) return;
+  customizing = product;
+  $("#custom-title").textContent = product.name;
+  $("#custom-desc").textContent = product.description;
+  $("#custom-visual").innerHTML = productVisual(product, 56);
+  $("#custom-options").innerHTML = `<legend>Personnalisez votre bouquet</legend>${(CONFIG.bouquetOptions ?? []).map(optionField).join("")}`;
+  refreshCustomTotal();
+  $("#custom-dialog").showModal();
+}
+
+function closeCustomize() {
+  $("#custom-dialog").close();
+  customizing = null;
+}
+
+function submitCustomize(event) {
+  event.preventDefault();
+  const options = refreshCustomTotal();
+  if (!options || !customizing) return;
+  cart.add(customizing.id, options.map(({ id, value }) => ({ id, value })));
+  toast(`${customizing.name} ajouté au panier`);
+  closeCustomize();
+}
+
+function stepOption(targetId, delta) {
+  const input = $(`#${targetId}`);
+  const def = CONFIG.bouquetOptions.find((d) => `opt-${d.id}` === targetId);
+  const next = Math.min(def.max, Math.max(0, Number(input.value) + delta));
+  input.value = next;
+  $(`#${targetId}-out`).textContent = next;
+  refreshCustomTotal();
 }
 
 /* ==========================================================================
@@ -185,7 +284,12 @@ function prepareCheckout() {
 }
 
 function readCheckout() {
-  const order = { items: cart.lines.map(({ productId, qty }) => ({ productId, qty })), customer: {}, address: {}, delivery: {} };
+  const order = {
+    items: cart.lines.map(({ productId, qty, options }) => ({
+      productId, qty, options: options.map(({ id, value }) => ({ id, value })),
+    })),
+    customer: {}, address: {}, delivery: {},
+  };
   for (const [id, path] of Object.entries(FIELDS)) {
     const [group, key] = path.split(".");
     const value = $(`#${id}`).value.trim();
@@ -273,7 +377,9 @@ export async function showMyOrders() {
 }
 
 function orderCard(order) {
-  const items = order.items.map((i) => `${i.qty} × ${escapeHtml(i.name)}`).join(" · ");
+  const items = order.items.map((i) => `
+    <div>${i.qty} × ${escapeHtml(i.name)}${(i.options ?? []).length
+      ? `<div class="muted" style="font-size:13px">${i.options.map((o) => escapeHtml(describeOption(o))).join(" · ")}</div>` : ""}</div>`).join("");
   return `
     <article class="order-card">
       <header>
@@ -324,27 +430,16 @@ export function initShop() {
   updateBadge();
 
   document.addEventListener("click", (event) => {
-    const category = event.target.closest("[data-category]");
-    if (category && category.closest("#category-filter")) {
-      state.category = category.dataset.category;
-      renderCatalog();
-      return;
-    }
-
     const target = event.target.closest("[data-action]");
     if (!target) return;
-    const { id } = target.dataset;
+    const { id, key } = target.dataset;
     switch (target.dataset.action) {
-      case "add-to-cart": {
-        cart.add(id);
-        const product = state.products.find((p) => p.id === id);
-        toast(`${product?.name ?? "Article"} ajouté au panier`);
-        break;
-      }
+      case "customize": openCustomize(id); break;
+      case "close-custom": closeCustomize(); break;
       case "open-cart": openCart(); break;
       case "close-cart": closeCart(); break;
-      case "qty-plus": changeQty(id, +1); break;
-      case "qty-minus": changeQty(id, -1); break;
+      case "qty-plus": changeQty(key, +1); break;
+      case "qty-minus": changeQty(key, -1); break;
       case "go-to-delivery": showStep("delivery"); break;
       case "back-to-cart": showStep("cart"); break;
       case "refresh-orders": showMyOrders(); break;
@@ -355,6 +450,19 @@ export function initShop() {
   $("#cart-drawer").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) closeCart();
   });
+
+  // Fenêtre de personnalisation : prix en direct, boutons +/−, fond grisé pour fermer.
+  const custom = $("#custom-dialog");
+  $("#custom-form").addEventListener("submit", submitCustomize);
+  $("#custom-form").addEventListener("input", refreshCustomTotal);
+  $("#custom-form").addEventListener("click", (event) => {
+    const step = event.target.closest("[data-step]");
+    if (step) stepOption(step.dataset.target, Number(step.dataset.step));
+  });
+  custom.addEventListener("click", (event) => {
+    if (event.target === custom) closeCustomize();
+  });
+  custom.addEventListener("close", () => (customizing = null));
 
   $("#checkout-form").addEventListener("submit", submitCheckout);
   // Dès qu'un champ en erreur est corrigé, on retire son contour rouge.
