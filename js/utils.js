@@ -17,11 +17,16 @@ export function escapeHtml(value) {
 
 /* ---------- Formats ---------- */
 
-const priceFormatter = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
+const { label: CURRENCY_LABEL, fractionDigits: CURRENCY_DIGITS } = CONFIG.currency;
+const priceFormatter = new Intl.NumberFormat("fr-FR", {
+  minimumFractionDigits: CURRENCY_DIGITS,
+  maximumFractionDigits: CURRENCY_DIGITS,
+});
 
-export const formatPrice = (cents) => priceFormatter.format((cents || 0) / 100);
+/** 450000 centimes → « 4 500 DA ». */
+export const formatPrice = (cents) => `${priceFormatter.format((cents || 0) / 100)} ${CURRENCY_LABEL}`;
 
-/** "39,90" ou "39.90" → 3990. Renvoie NaN si la saisie est invalide. */
+/** "4500" ou "4500,50" → 450000 (centimes). Renvoie NaN si la saisie est invalide. */
 export function parsePrice(text) {
   const value = Number(String(text).replace(/\s/g, "").replace(",", "."));
   return Number.isFinite(value) ? Math.round(value * 100) : NaN;

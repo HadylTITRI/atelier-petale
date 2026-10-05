@@ -6,22 +6,20 @@ export const CONFIG = {
   shopName: "Atelier Pétale",
 
   /**
-   * "local"    → mode démo : les données restent dans le navigateur.
-   *              Idéal pour tester, mais chaque visiteur a ses propres données.
-   * "supabase" → vraie base de données en ligne (voir README.md).
+   * "api"   → vraie boutique : le site parle au serveur Node.js (dossier server/), qui utilise MySQL.
+   * "local" → mode démo : les données restent dans le navigateur de chaque visiteur
+   *           (pratique pour tester sans serveur, ne jamais utiliser en ligne).
    */
-  mode: "local",
+  mode: "api",
 
-  supabase: {
-    url: "",      // ex. "https://abcd1234.supabase.co"
-    anonKey: "",  // clé publique "anon" (Project Settings → API)
-  },
+  /** Fuseau horaire de la boutique (sert à vérifier la date de livraison). */
+  timezone: "Africa/Algiers",
 
-  /** Identifiants admin du mode démo uniquement (aucune sécurité réelle). */
-  demoAdmin: { email: "admin@demo.fr", password: "admin123" },
+  /** Monnaie : le dinar algérien. Les prix sont stockés en centimes (4500 DA = 450000). */
+  currency: { label: "DA", fractionDigits: 0 },
 
-  /** Frais de livraison en centimes. En mode Supabase, garder la même valeur que dans supabase/schema.sql. */
-  deliveryFeeCents: 590,
+  /** Frais de livraison en centimes (600 DA). */
+  deliveryFeeCents: 60000,
 
   /** La boutique ne vend que des bouquets. */
   categories: {
@@ -39,14 +37,14 @@ export const CONFIG = {
    */
   bouquetOptions: [
     { id: "initiales", label: "Initiales", type: "text", maxLength: 3, uppercase: true,
-      placeholder: "ex. AM", help: "1 à 3 lettres, posées sur le bouquet.", priceCents: 350 },
+      placeholder: "ex. AM", help: "1 à 3 lettres, posées sur le bouquet.", priceCents: 30000 },
     { id: "prenom", label: "Prénom ou nom", type: "text", maxLength: 20,
-      placeholder: "ex. Camille", help: "Écrit sur un ruban ou un petit écriteau.", priceCents: 590 },
-    { id: "papillons", label: "Papillons artificiels", type: "quantity", max: 12, unitPriceCents: 150,
+      placeholder: "ex. Camille", help: "Écrit sur un ruban ou un petit écriteau.", priceCents: 50000 },
+    { id: "papillons", label: "Papillons artificiels", type: "quantity", max: 12, unitPriceCents: 10000,
       help: "Piqués dans le bouquet." },
-    { id: "ruban", label: "Ruban satin", type: "choice", priceCents: 200,
+    { id: "ruban", label: "Ruban satin", type: "choice", priceCents: 15000,
       choices: ["Rose poudré", "Blanc", "Doré", "Rouge", "Noir"] },
-    { id: "emballage", label: "Emballage cadeau premium", type: "toggle", priceCents: 300,
+    { id: "emballage", label: "Emballage cadeau premium", type: "toggle", priceCents: 40000,
       help: "Papier soie et boîte ou sac rigide." },
   ],
 

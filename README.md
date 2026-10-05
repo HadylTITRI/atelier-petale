@@ -1,12 +1,11 @@
 # Atelier Pétale
 
-Boutique en ligne de bouquets de fleurs personnalisables, avec livraison à domicile.
-Une seule application regroupe deux espaces :
+Boutique en ligne de bouquets de fleurs personnalisables, avec livraison à domicile en Algérie (prix en dinars, paiement à la livraison).
 
-- **Clients** : catalogue de bouquets, personnalisation (initiales, papillons…), panier, formulaire de livraison, validation, suivi de la commande.
-- **Administration** (après connexion) : commandes reçues en direct, changement de statut, gestion des produits.
+- **Clients** : catalogue de bouquets, personnalisation (initiales, prénom, papillons, ruban, emballage cadeau), panier, formulaire de livraison, suivi de la commande avec son numéro.
+- **Administration** (après connexion) : commandes reçues, changement de statut, gestion des bouquets.
 
-Aucune installation ni compilation : HTML, CSS et JavaScript (modules ES), sans framework.
+Site : HTML, CSS et JavaScript (modules ES), sans framework. Serveur : **Node.js**, une seule dépendance (`mysql2`). Base de données : **MySQL**.
 
 ## Structure
 
@@ -14,83 +13,115 @@ Aucune installation ni compilation : HTML, CSS et JavaScript (modules ES), sans 
 atelier-petale/
 ├── index.html               L'application (toutes les pages)
 ├── css/style.css            Styles
-├── js/
-│   ├── config.js            ← Réglages : nom, mode, frais de livraison, catégories
-│   ├── app.js               Navigation et accès admin
-│   ├── shop.js              Catalogue, panier, livraison, suivi client
-│   ├── admin.js             Connexion, commandes, produits
-│   ├── cart.js              Panier
+├── js/                      Le site (navigateur)
+│   ├── config.js            ← Réglages : nom, monnaie, livraison, options et prix des options
 │   ├── options.js           Options de personnalisation : validation et calcul des prix
-│   ├── utils.js             Fonctions communes (formats, sécurité, visuels)
+│   ├── app.js, shop.js, admin.js, cart.js, utils.js
 │   └── store/
 │       ├── index.js         Choisit la source de données selon config.js
-│       ├── local-store.js   Mode démo (navigateur)
-│       └── supabase-store.js Mode production (Supabase)
-└── supabase/schema.sql      Tables, règles de sécurité et fonctions
+│       ├── api-store.js     Parle au serveur (mode "api", la vraie boutique)
+│       └── local-store.js   Mode démo dans le navigateur (mode "local")
+├── server/                  Le serveur (Node.js)
+│   ├── index.js             Démarrage (npm start)
+│   ├── app.js               API et fichiers du site, sécurité
+│   ├── validation.js        Vérification des commandes, prix recalculés côté serveur
+│   ├── repo-mysql.js        Toutes les requêtes SQL
+│   ├── auth.js, db.js, rate-limit.js, util.js
+│   ├── db-init.js           npm run db:init : crée les tables
+│   └── create-admin.js      npm run admin:create : crée le compte administrateur
+├── database/schema.sql      Tables MySQL
+├── test/                    Tests du serveur (npm test)
+└── .env.example             Modèle de configuration
 ```
 
-## Pages
+Le navigateur ne parle jamais à MySQL : il appelle le serveur, qui vérifie tout (champs, quantités, options) et **recalcule les prix lui-même**. Seuls `index.html`, `css/` et `js/` sont servis au public.
 
-| Adresse        | Qui la voit                                                  |
-|----------------|--------------------------------------------------------------|
-| `#boutique`    | Tout le monde                                                |
-| `#commandes`   | Tout le monde (chaque client ne voit que ses commandes)      |
-| `#admin`     postgre  | Formulaire de connexion, puis tableau de bord pour l'admin   |
+## 1. Tester sur votre PC
 
-Le lien « Espace admin » est en bas de page. L'onglet « Tableau de bord » n'apparaît qu'une fois connecté.
+Il faut [Node.js](https://nodejs.org) 20 ou plus, et MySQL 8 (ou MariaDB 10.5+, par exemple via XAMPP).
 
-## 1. Tester en mode démo
-
-Les modules JavaScript ne fonctionnent pas en double-cliquant sur le fichier : il faut un petit serveur local.
-
-- **VS Code** : extension *Live Server*, clic droit sur `index.html` → *Open with Live Server*.
-- **Terminal** : dans le dossier, `npx serve` (ou `python3 -m http.server 8000`), puis ouvrir l'adresse affichée.
-
-Connexion admin de démo : `admin@demo.fr` / `admin123` (modifiable dans `js/config.js`).
-
-Astuce : ouvrez la boutique dans un onglet et `#admin` dans un autre, passez une commande, elle apparaît aussitôt dans le tableau de bord.
-
-> En mode démo, les données restent dans le navigateur : chaque visiteur a les siennes et il n'y a aucune vraie sécurité. Ce mode sert uniquement à tester.
-
-## 2. Passer en production avec Supabase (gratuit pour démarrer)
-
-1. Créez un projet sur [supabase.com](https://supabase.com).
-2. **SQL Editor** → *New query* → collez le contenu de `supabase/schema.sql` → *Run*.
-3. **Authentication → Users** → *Add user* : créez votre compte admin (e-mail + mot de passe).
-4. Donnez-lui l'accès admin : dans le SQL Editor, exécutez
+1. Créez une base vide et un utilisateur (dans MySQL Workbench ou phpMyAdmin) :
    ```sql
-   insert into public.admins (user_id)
-   select id from auth.users where email = 'votre@email.fr';
+   CREATE DATABASE atelier_petale CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER 'petale'@'localhost' IDENTIFIED BY 'un_mot_de_passe_solide';
+   GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON atelier_petale.* TO 'petale'@'localhost';
    ```
-5. **Authentication → Sign In / Providers** : désactivez *Allow new users to sign up* (seule vous pourrez vous connecter).
-6. **Project Settings → API** : copiez l'URL du projet et la clé `anon public`, puis dans `js/config.js` :
-   ```js
-   mode: "supabase",
-   supabase: { url: "https://xxxx.supabase.co", anonKey: "eyJ..." },
+   Avec XAMPP, vous pouvez garder `root` sans mot de passe pour tester.
+2. Copiez `.env.example` en `.env` et remplissez `SESSION_SECRET` (commande de génération dans le fichier), `DB_USER`, `DB_PASSWORD`. Mettez en commentaire la ligne `DATABASE_URL` et décommentez les lignes `DB_*`.
+3. Dans le dossier du projet :
    ```
+   npm install
+   npm run db:init
+   npm run admin:create -- votre@email.dz
+   npm start
+   ```
+4. Ouvrez http://localhost:3000. L'espace admin est le lien « Espace admin » en bas de page.
 
-La clé `anon` peut être publique : les règles de `schema.sql` empêchent les clients de lire les commandes des autres, de modifier les prix ou les produits.
+Sans serveur ni base, vous pouvez aussi essayer le **mode démo** : mettez `mode: "local"` dans `js/config.js` et ouvrez le dossier avec un petit serveur de fichiers (extension *Live Server* de VS Code). Connexion de démo : `admin@demo.fr` / `admin123`. Les données restent dans le navigateur : ne jamais utiliser ce mode en ligne.
 
-## 3. Mettre en ligne
+## 2. Mettre en ligne gratuitement (Render + Aiven)
 
-Le site est statique : déposez le dossier sur **Netlify** (glisser-déposer sur app.netlify.com/drop), **Vercel**, **Cloudflare Pages** ou **GitHub Pages**.
+Offres gratuites vérifiées en octobre 2026, sans carte bancaire ; elles peuvent changer.
 
-## Options de personnalisation des bouquets
+| Rôle | Service | Limites à connaître |
+|------|---------|---------------------|
+| Serveur Node.js | [Render](https://render.com), plan *Free* | s'endort après 15 min sans visite, le réveil prend environ une minute |
+| Base MySQL | [Aiven](https://aiven.io/free-mysql-database), plan *Free* | 1 Go ; peut être éteinte après une longue inactivité |
 
-Sur chaque bouquet, le bouton **Personnaliser** ouvre une fenêtre où le client choisit ses options avant d'ajouter au panier : initiales, prénom ou nom, papillons artificiels, ruban, emballage cadeau premium. Le prix se met à jour en direct, et le détail apparaît dans le panier, dans « Mes commandes » et dans le tableau de bord admin.
+### a) La base chez Aiven
+1. Créez un compte, puis un service **MySQL** avec le plan **Free**, dans une région d'Europe (la plus proche de l'Algérie).
+2. Quand le service est démarré, copiez le **Service URI** (il ressemble à `mysql://avnadmin:…@…aivencloud.com:12345/defaultdb?ssl-mode=REQUIRED`).
+3. Sur votre PC, mettez cette adresse dans `.env` (`DATABASE_URL=…`) avec `SESSION_SECRET`, puis lancez :
+   ```
+   npm install
+   npm run db:init
+   npm run admin:create -- votre@email.dz
+   ```
+   Le premier crée les tables, le second crée votre compte administrateur (le mot de passe est demandé, 12 caractères minimum).
 
-Les options et leurs prix se règlent dans `bouquetOptions` (`js/config.js`) : ajouter, retirer ou renommer une option ne demande aucun autre changement. Quatre types existent : `text` (initiales, prénom), `quantity` (papillons), `choice` (couleur du ruban) et `toggle` (case à cocher). Les prix des options sont recalculés à l'enregistrement de la commande, jamais lus depuis le navigateur.
+### b) Le serveur chez Render
+1. Mettez le projet sur GitHub, puis dans Render : **New → Web Service**, choisissez le dépôt.
+2. Réglages : Runtime **Node**, Build Command `npm install`, Start Command `npm start`, Instance Type **Free**, région **Frankfurt**.
+3. Dans **Environment**, ajoutez :
+   | Variable | Valeur |
+   |----------|--------|
+   | `NODE_ENV` | `production` |
+   | `TRUST_PROXY` | `true` |
+   | `SESSION_SECRET` | une longue phrase aléatoire (32 caractères minimum) |
+   | `DATABASE_URL` | le Service URI d'Aiven |
+4. Déployez. Le site est disponible sur `https://votre-service.onrender.com`, en HTTPS.
+
+### c) Éviter l'endormissement (facultatif)
+Créez un moniteur gratuit sur [UptimeRobot](https://uptimerobot.com) qui visite `https://votre-service.onrender.com/healthz?db=1` toutes les 5 minutes. Le serveur reste éveillé et la base reste active. Le plan gratuit de Render (750 heures par mois) couvre un service allumé en permanence.
+
+### Avant d'ouvrir au public
+- Remplacez les bouquets d'exemple depuis l'espace admin, et réglez les prix des options et les frais de livraison dans `js/config.js` (en centimes de dinar : 600 DA = `60000`).
+- Vérifiez la réglementation algérienne applicable à la vente en ligne (commerce électronique, loi 18-05) et à la protection des données personnelles (loi 18-07) : mentions légales, conditions de vente, politique de confidentialité. Vous collectez des noms, téléphones et adresses.
+- Sauvegardez régulièrement la base (export depuis Aiven ou `mysqldump`).
+
+## Sécurité, en bref
+
+- Mots de passe admin hachés (scrypt), session dans un cookie `HttpOnly` signé, 12 h.
+- Prix, options et quantités recalculés et vérifiés côté serveur ; requêtes SQL paramétrées.
+- Limitation des essais (connexion, commandes, suivi), protection contre les requêtes venues d'un autre site, en-têtes de sécurité (CSP).
+- Le suivi par numéro de commande n'affiche ni téléphone ni adresse.
 
 ## Personnaliser
 
-- **Nom, frais de livraison, catégories, créneaux** : `js/config.js`.
-  Si vous changez les frais de livraison, changez aussi `delivery_fee` dans `supabase/schema.sql`.
-  Si vous ajoutez une catégorie, ajoutez-la aussi dans la contrainte `category in (...)` de la table `products`.
+- **Nom, monnaie, livraison, créneaux, options et leurs prix** : `js/config.js`. Les options sont de quatre types : `text` (initiales, prénom), `quantity` (papillons), `choice` (couleur du ruban), `toggle` (case à cocher). Le serveur utilise le même fichier : un changement s'applique partout après redémarrage.
 - **Couleurs et polices** : variables en haut de `css/style.css`.
-- **Photos produits** : collez le lien d'une image dans le formulaire produit (par exemple depuis Supabase Storage ou Cloudinary).
+- **Photos des bouquets** : collez le lien d'une image dans le formulaire produit.
+
+## Tests
+
+```
+npm test
+```
+Teste le serveur (prix, options, refus des commandes invalides, accès admin, fichiers protégés, limitation des essais) avec une base en mémoire, sans MySQL.
 
 ## Pistes d'évolution
 
-- Paiement en ligne (Stripe Checkout).
-- E-mail de confirmation au client et à l'atelier (Supabase Edge Function + Resend).
-- Envoi des photos directement depuis le tableau de bord (Supabase Storage).
+- Paiement en ligne (CIB / Edahabia via un prestataire agréé) en plus du paiement à la livraison.
+- Version arabe du site.
+- Notification (e-mail, Telegram ou WhatsApp) à l'atelier à chaque nouvelle commande.
+- Envoi des photos directement depuis le tableau de bord.

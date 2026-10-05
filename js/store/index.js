@@ -12,13 +12,17 @@
  *   updateOrderStatus(id, statut)
  *   subscribeToOrders(callback)       → fonction pour se désabonner
  *   auth.signIn(email, motDePasse) / auth.signOut() / auth.getUser()
+ *
+ * Deux implémentations, choisies par `mode` dans config.js :
+ *   "api"   → api-store.js   (serveur Node.js + MySQL, pour la vraie boutique)
+ *   "local" → local-store.js (démo dans le navigateur)
  */
 import { CONFIG } from "../config.js";
 
 async function createStore() {
-  if (CONFIG.mode === "supabase") {
-    const { createSupabaseStore } = await import("./supabase-store.js");
-    return createSupabaseStore(CONFIG.supabase);
+  if (CONFIG.mode === "api") {
+    const { createApiStore } = await import("./api-store.js");
+    return createApiStore();
   }
   const { createLocalStore } = await import("./local-store.js");
   return createLocalStore();

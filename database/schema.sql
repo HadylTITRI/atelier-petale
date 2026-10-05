@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS products (
   id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
   name         VARCHAR(80)  NOT NULL,
   category     ENUM('bouquets') NOT NULL DEFAULT 'bouquets',
-  price_cents  INT UNSIGNED NOT NULL,                 -- 3990 = 39,90 €
+  price_cents  INT UNSIGNED NOT NULL,                 -- en centimes de dinar : 450000 = 4 500 DA
   description  VARCHAR(300) NOT NULL DEFAULT '',
   image_url    VARCHAR(500) NOT NULL DEFAULT '',
   active       BOOLEAN      NOT NULL DEFAULT TRUE,    -- visible dans la boutique
@@ -89,8 +89,8 @@ CREATE TABLE IF NOT EXISTS order_items (
 ) ENGINE = InnoDB;
 
 -- ---------- Administrateurs -------------------------------------------------
--- Le mot de passe n'est jamais stocké en clair : uniquement son empreinte (bcrypt),
--- calculée par le serveur (PHP : password_hash(), Node.js : bcrypt.hash()).
+-- Le mot de passe n'est jamais stocké en clair : uniquement son empreinte (scrypt),
+-- calculée par le serveur. Créer un compte : npm run admin:create
 
 CREATE TABLE IF NOT EXISTS admins (
   id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -107,12 +107,12 @@ CREATE TABLE IF NOT EXISTS admins (
 INSERT INTO products (name, category, price_cents, description)
 SELECT sample.name, sample.category, sample.price_cents, sample.description
 FROM (
-  SELECT 'Bouquet de pivoines' AS name, 'bouquets' AS category, 4590 AS price_cents,
+  SELECT 'Bouquet de pivoines' AS name, 'bouquets' AS category, 450000 AS price_cents,
          'Pivoines roses de saison et feuillage d''eucalyptus, environ 40 cm.' AS description
-  UNION ALL SELECT 'Bouquet champêtre', 'bouquets', 3490, 'Fleurs des champs du moment, emballage kraft.'
-  UNION ALL SELECT '12 roses rouges', 'bouquets', 5290, 'Douze roses rouges longues tiges, ruban satin.'
-  UNION ALL SELECT 'Bouquet de tulipes', 'bouquets', 3190, 'Quinze tulipes assorties, papier kraft et ruban.'
-  UNION ALL SELECT 'Bouquet pastel', 'bouquets', 3990, 'Roses, lisianthus et gypsophile dans des tons poudrés.'
+  UNION ALL SELECT 'Bouquet champêtre', 'bouquets', 350000, 'Fleurs des champs du moment, emballage kraft.'
+  UNION ALL SELECT '12 roses rouges', 'bouquets', 520000, 'Douze roses rouges longues tiges, ruban satin.'
+  UNION ALL SELECT 'Bouquet de tulipes', 'bouquets', 320000, 'Quinze tulipes assorties, papier kraft et ruban.'
+  UNION ALL SELECT 'Bouquet pastel', 'bouquets', 400000, 'Roses, lisianthus et gypsophile dans des tons poudrés.'
 ) AS sample
 WHERE NOT EXISTS (SELECT 1 FROM products);
 

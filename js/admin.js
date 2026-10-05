@@ -295,7 +295,7 @@ async function submitProduct(event) {
   };
 
   if (!product.name || !(product.priceCents > 0)) {
-    errorEl.textContent = "Indiquez un nom et un prix supérieur à 0 (ex. 39,90).";
+    errorEl.textContent = "Indiquez un nom et un prix supérieur à 0 (ex. 4500).";
     errorEl.hidden = false;
     return;
   }
@@ -351,9 +351,9 @@ function selectTab(tab) {
 export function initAdmin(appHooks) {
   hooks = { ...hooks, ...appHooks };
 
-  if (CONFIG.mode === "local") {
+  if (store.demoAdmin) {
     const hint = $("#demo-hint");
-    hint.textContent = `Mode démo : ${CONFIG.demoAdmin.email} / ${CONFIG.demoAdmin.password}`;
+    hint.textContent = `Mode démo : ${store.demoAdmin.email} / ${store.demoAdmin.password}`;
     hint.hidden = false;
   }
 

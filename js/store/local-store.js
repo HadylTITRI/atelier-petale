@@ -7,6 +7,9 @@ import { CONFIG, STATUSES } from "../config.js";
 import { local, uid, makeOrderCode } from "../utils.js";
 import { normalizeSelection, optionsTotalCents } from "../options.js";
 
+/** Identifiants du mode démo uniquement (aucune sécurité réelle). Le vrai site utilise le serveur. */
+const DEMO_ADMIN = { email: "admin@demo.fr", password: "admin123" };
+
 const KEYS = {
   products: "ap_demo_products",
   orders: "ap_demo_orders",
@@ -14,11 +17,11 @@ const KEYS = {
 };
 
 const SAMPLE_PRODUCTS = [
-  { name: "Bouquet de pivoines", category: "bouquets", priceCents: 4590, description: "Pivoines roses de saison et feuillage d'eucalyptus, environ 40 cm." },
-  { name: "Bouquet champêtre", category: "bouquets", priceCents: 3490, description: "Fleurs des champs du moment, emballage kraft." },
-  { name: "12 roses rouges", category: "bouquets", priceCents: 5290, description: "Douze roses rouges longues tiges, ruban satin." },
-  { name: "Bouquet de tulipes", category: "bouquets", priceCents: 3190, description: "Quinze tulipes assorties, papier kraft et ruban." },
-  { name: "Bouquet pastel", category: "bouquets", priceCents: 3990, description: "Roses, lisianthus et gypsophile dans des tons poudrés." },
+  { name: "Bouquet de pivoines", category: "bouquets", priceCents: 450000, description: "Pivoines roses de saison et feuillage d'eucalyptus, environ 40 cm." },
+  { name: "Bouquet champêtre", category: "bouquets", priceCents: 350000, description: "Fleurs des champs du moment, emballage kraft." },
+  { name: "12 roses rouges", category: "bouquets", priceCents: 520000, description: "Douze roses rouges longues tiges, ruban satin." },
+  { name: "Bouquet de tulipes", category: "bouquets", priceCents: 320000, description: "Quinze tulipes assorties, papier kraft et ruban." },
+  { name: "Bouquet pastel", category: "bouquets", priceCents: 400000, description: "Roses, lisianthus et gypsophile dans des tons poudrés." },
 ];
 
 function readProducts() {
@@ -33,7 +36,7 @@ function readProducts() {
 }
 
 /** La boutique ne vend que les catégories de config.js (les anciens produits démo sont masqués). */
-const sellable = (p) => p.category in CONFIG.categories;
+const sellable = (p) => Object.hasOwn(CONFIG.categories, p.category);
 
 const readOrders = () => local.get(KEYS.orders, []);
 const writeOrders = (orders) => local.set(KEYS.orders, orders);
@@ -42,6 +45,8 @@ const byCategoryThenName = (a, b) => a.category.localeCompare(b.category) || a.n
 
 export function createLocalStore() {
   return {
+    demoAdmin: DEMO_ADMIN,
+
     async listProducts({ includeHidden = false } = {}) {
       return readProducts()
         .filter((p) => sellable(p) && (includeHidden || p.active))
@@ -123,8 +128,7 @@ export function createLocalStore() {
 
     auth: {
       async signIn(email, password) {
-        const { demoAdmin } = CONFIG;
-        if (email.trim().toLowerCase() !== demoAdmin.email || password !== demoAdmin.password) {
+        if (email.trim().toLowerCase() !== DEMO_ADMIN.email || password !== DEMO_ADMIN.password) {
           throw new Error("E-mail ou mot de passe incorrect.");
         }
         sessionStorage.setItem(KEYS.session, email);
