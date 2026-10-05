@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nour Flower — Bouquets, nails & cadeaux</title>
+  <meta name="description" content="Bouquets frais, nails et petites attentions livrés à domicile.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Figtree:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+
+  <!-- ===================== En-tête ===================== -->
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="#boutique">
+        <svg width="30" height="30" viewBox="0 0 40 40" aria-hidden="true">
+          <g fill="var(--petal)">
+            <ellipse cx="20" cy="11" rx="6" ry="9"/><ellipse cx="20" cy="29" rx="6" ry="9"/>
+            <ellipse cx="11" cy="20" rx="9" ry="6"/><ellipse cx="29" cy="20" rx="9" ry="6"/>
+          </g>
+          <circle cx="20" cy="20" r="5" fill="var(--stem)"/>
+        </svg>
+        <h1 data-shop-name>Atelier Pétale</h1>
+      </a>
+
+      <nav class="tabs" aria-label="Navigation principale">
+        <a href="#boutique" data-route="boutique">Boutique</a>
+        <a href="#commandes" data-route="commandes">Mes commandes</a>
+        <a href="#admin" data-route="admin" data-admin-only hidden>Tableau de bord</a>
+      </nav>
+
+      <button class="btn btn-primary btn-pill" type="button" data-action="open-cart" aria-label="Ouvrir le panier">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M5 7h14l-1.5 11a2 2 0 0 1-2 1.7h-7a2 2 0 0 1-2-1.7z"/><path d="M9 7a3 3 0 0 1 6 0"/>
+        </svg>
+        Panier <span class="badge num" id="cart-count">0</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ===================== Boutique ===================== -->
+    <section id="view-boutique" data-view="boutique">
+      <div class="page-intro">
+        <span class="eyebrow">Fleuriste &amp; onglerie · Livraison à domicile</span>
+        <h2>Bouquets frais, nails et petites attentions</h2>
+        <p>Choisissez vos articles, indiquez l'adresse de livraison et validez. Nous préparons votre commande et vous suivez son avancement dans « Mes commandes ».</p>
+      </div>
+      <div class="chips" id="category-filter" role="group" aria-label="Catégories"></div>
+      <div class="product-grid" id="product-grid" aria-live="polite"></div>
+    </section>
+
+    <!-- ===================== Suivi client ===================== -->
+    <section id="view-commandes" data-view="commandes" hidden>
+      <div class="page-intro">
+        <h2>Mes commandes</h2>
+        <p>Les commandes passées depuis cet appareil s'affichent ici. Vous avez commandé ailleurs ? Ajoutez votre numéro de commande.</p>
+      </div>
+      <form class="lookup" id="lookup-form">
+        <input id="lookup-code" aria-label="Numéro de commande" placeholder="Numéro de commande, ex. AP-K7M2QX" autocomplete="off" required>
+        <button class="btn" type="submit">Retrouver</button>
+        <button class="btn" type="button" data-action="refresh-orders">Actualiser</button>
+      </form>
+      <div class="order-list" id="my-orders"></div>
+    </section>
+
+    <!-- ===================== Connexion admin ===================== -->
+    <section id="view-login" data-view="login" hidden>
+      <div class="panel login-card">
+        <h3>Espace administrateur</h3>
+        <form class="form" id="login-form" novalidate>
+          <p class="demo-hint" id="demo-hint" hidden></p>
+          <div class="field">
+            <label for="login-email">E-mail</label>
+            <input id="login-email" type="email" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="login-password">Mot de passe</label>
+            <input id="login-password" type="password" autocomplete="current-password" required>
+          </div>
+          <p class="form-error" id="login-error" hidden></p>
+          <button class="btn btn-primary btn-block" type="submit">Se connecter</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ===================== Tableau de bord ===================== -->
+    <section id="view-admin" data-view="admin" hidden>
+      <div class="admin-bar">
+        <div class="subtabs" role="tablist" aria-label="Administration">
+          <button type="button" role="tab" aria-selected="true" data-admin-tab="orders">Commandes</button>
+          <button type="button" role="tab" aria-selected="false" data-admin-tab="products">Produits</button>
+        </div>
+        <button class="btn" type="button" data-action="logout">Se déconnecter</button>
+      </div>
+
+      <!-- Commandes -->
+      <div id="admin-orders" role="tabpanel">
+        <div class="kpis" id="kpis"></div>
+        <div class="chips" id="status-filter" role="group" aria-label="Filtrer par statut"></div>
+        <div class="split">
+          <div class="order-table" id="order-table"></div>
+          <aside class="panel order-detail" id="order-detail" aria-live="polite"></aside>
+        </div>
+      </div>
+
+      <!-- Produits -->
+      <div id="admin-products" role="tabpanel" hidden>
+        <div class="product-admin">
+          <div class="product-list" id="product-list"></div>
+          <div class="panel">
+            <h3 id="product-form-title">Ajouter un produit</h3>
+            <form class="form" id="product-form" novalidate>
+              <input type="hidden" id="pf-id">
+              <div class="field">
+                <label for="pf-name">Nom</label>
+                <input id="pf-name" maxlength="80" placeholder="Bouquet de pivoines" required>
+              </div>
+              <div class="form-row">
+                <div class="field">
+                  <label for="pf-category">Catégorie</label>
+                  <select id="pf-category"></select>
+                </div>
+                <div class="field">
+                  <label for="pf-price">Prix (€)</label>
+                  <input id="pf-price" inputmode="decimal" placeholder="39,90" required>
+                </div>
+              </div>
+              <div class="field">
+                <label for="pf-description">Description</label>
+                <textarea id="pf-description" maxlength="300" placeholder="Composition, taille, délai…"></textarea>
+              </div>
+              <div class="field">
+                <label for="pf-image">Lien de la photo (facultatif)</label>
+                <input id="pf-image" type="url" placeholder="https://…/photo.jpg">
+                <span class="hint">Sans photo, une illustration de la catégorie s'affiche.</span>
+              </div>
+              <label class="checkbox"><input type="checkbox" id="pf-active" checked> Visible dans la boutique</label>
+              <p class="form-error" id="product-error" hidden></p>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit" id="pf-submit">Ajouter le produit</button>
+                <button class="btn" type="button" id="pf-cancel" hidden>Annuler</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>© <span data-shop-name>Atelier Pétale</span> · Paiement à la livraison</span>
+      <a href="#admin">Espace admin</a>
+    </div>
+  </footer>
+
+  <!-- ===================== Panier (fenêtre) ===================== -->
+  <dialog class="drawer" id="cart-drawer" aria-labelledby="drawer-title">
+    <div class="drawer-header">
+      <h2 id="drawer-title">Votre panier</h2>
+      <button class="close-btn" type="button" data-action="close-cart" aria-label="Fermer">×</button>
+    </div>
+    <div class="progress" aria-hidden="true"><span></span><span></span><span></span></div>
+
+    <!-- Étape 1 : panier -->
+    <div class="drawer-step" data-step="cart">
+      <div class="drawer-body" id="cart-lines"></div>
+      <div class="drawer-footer" id="cart-summary"></div>
+    </div>
+
+    <!-- Étape 2 : livraison -->
+    <div class="drawer-step" data-step="delivery" hidden>
+      <div class="drawer-body">
+        <form class="form" id="checkout-form" novalidate>
+          <fieldset>
+            <legend>Vos coordonnées</legend>
+            <div class="field">
+              <label for="co-name">Nom et prénom</label>
+              <input id="co-name" autocomplete="name" required>
+            </div>
+            <div class="form-row">
+              <div class="field">
+                <label for="co-phone">Téléphone</label>
+                <input id="co-phone" type="tel" autocomplete="tel" placeholder="06 12 34 56 78" required>
+              </div>
+              <div class="field">
+                <label for="co-email">E-mail (facultatif)</label>
+                <input id="co-email" type="email" autocomplete="email">
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Adresse de livraison</legend>
+            <div class="field">
+              <label for="co-recipient">Destinataire (si différent)</label>
+              <input id="co-recipient" placeholder="Pour offrir : nom de la personne">
+            </div>
+            <div class="field">
+              <label for="co-street">Adresse</label>
+              <input id="co-street" autocomplete="street-address" placeholder="12 rue des Lilas" required>
+            </div>
+            <div class="form-row zip-city">
+              <div class="field">
+                <label for="co-zip">Code postal</label>
+                <input id="co-zip" inputmode="numeric" autocomplete="postal-code" maxlength="5" required>
+              </div>
+              <div class="field">
+                <label for="co-city">Ville</label>
+                <input id="co-city" autocomplete="address-level2" required>
+              </div>
+            </div>
+            <div class="field">
+              <label for="co-details">Étage, code, interphone</label>
+              <input id="co-details">
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Quand ?</legend>
+            <div class="form-row">
+              <div class="field">
+                <label for="co-date">Date</label>
+                <input id="co-date" type="date" required>
+              </div>
+              <div class="field">
+                <label for="co-slot">Créneau</label>
+                <select id="co-slot"></select>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Un petit mot ?</legend>
+            <div class="field">
+              <label for="co-card">Message sur la carte</label>
+              <textarea id="co-card" maxlength="200" placeholder="Joyeux anniversaire maman !"></textarea>
+            </div>
+            <div class="field">
+              <label for="co-notes">Précisions pour l'atelier</label>
+              <textarea id="co-notes" maxlength="300" placeholder="Taille des ongles, couleur préférée, allergie…"></textarea>
+            </div>
+          </fieldset>
+          <p class="form-error" id="checkout-error" role="alert" hidden></p>
+        </form>
+      </div>
+      <div class="drawer-footer">
+        <div class="sum-row total"><span>Total à régler</span><span class="num" id="checkout-total"></span></div>
+        <div class="form-actions">
+          <button class="btn" type="button" data-action="back-to-cart">Retour</button>
+          <button class="btn btn-primary" style="flex:1" type="submit" form="checkout-form" id="checkout-submit">Valider la commande</button>
+        </div>
+        <span class="muted" style="font-size:12px">Paiement à la livraison.</span>
+      </div>
+    </div>
+
+    <!-- Étape 3 : confirmation -->
+    <div class="drawer-step" data-step="done" hidden>
+      <div class="drawer-body">
+        <div class="confirmation">
+          <span id="done-art"></span>
+          <span class="eyebrow">Commande reçue</span>
+          <div class="code num" id="done-code"></div>
+          <p class="muted" style="max-width:32ch;margin:0">Notez ce numéro. Vous pouvez suivre l'avancement dans « Mes commandes ».</p>
+        </div>
+      </div>
+      <div class="drawer-footer">
+        <a class="btn btn-primary btn-block" href="#commandes" data-action="close-cart">Suivre ma commande</a>
+      </div>
+    </div>
+  </dialog>
+
+</body>
+</html>

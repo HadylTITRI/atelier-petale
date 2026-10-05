@@ -1,0 +1,214 @@
+-- ============================================================================
+-- Atelier Pétale — base de données Supabase
+-- À coller dans Supabase → SQL Editor → New query → Run.
+-- ============================================================================
+
+-- ---------- Tables ----------------------------------------------------------
+
+create table if not exists public.products (
+  id           uuid primary key default gen_random_uuid(),
+  name         text not null check (char_length(name) between 1 and 80),
+  category     text not null check (category in ('bouquets', 'nails', 'autres')),
+  price_cents  integer not null check (price_cents > 0),
+  description  text not null default '',
+  image_url    text not null default '',
+  active       boolean not null default true,
+  created_at   timestamptz not null default now()
+);
+
+create table if not exists public.orders (
+  id              uuid primary key default gen_random_uuid(),
+  code            text not null unique,
+  status          text not null default 'nouvelle'
+                  check (status in ('nouvelle', 'preparation', 'livraison', 'livree', 'annulee')),
+  items           jsonb not null,           -- [{productId, name, priceCents, qty}]
+  subtotal_cents  integer not null,
+  delivery_cents  integer not null,
+  total_cents     integer not null,
+  customer        jsonb not null,           -- {name, phone, email}
+  address         jsonb not null,           -- {recipient, street, zip, city, details}
+  delivery_date   date not null,
+  delivery_slot   text not null,
+  card_message    text not null default '',
+  notes           text not null default '',
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists orders_created_at_idx on public.orders (created_at desc);
+
+-- Comptes autorisés à accéder au tableau de bord.
+create table if not exists public.admins (
+  user_id uuid primary key references auth.users (id) on delete cascade
+);
+
+-- ---------- Qui est admin ? -------------------------------------------------
+
+create or replace function public.is_admin()
+returns boolean
+language sql stable security definer set search_path = public
+as $$
+  select exists (select 1 from public.admins where user_id = auth.uid());
+$$;
+
+-- ---------- Règles d'accès (Row Level Security) -----------------------------
+
+alter table public.products enable row level security;
+alter table public.orders   enable row level security;
+alter table public.admins   enable row level security;
+
+-- Produits : tout le monde voit les produits visibles, l'admin voit et gère tout.
+drop policy if exists "Lecture des produits" on public.products;
+create policy "Lecture des produits" on public.products
+  for select using (active or public.is_admin());
+
+drop policy if exists "Gestion des produits par l'admin" on public.products;
+create policy "Gestion des produits par l'admin" on public.products
+  for all to authenticated using (public.is_admin()) with check (public.is_admin());
+
+-- Commandes : seul l'admin les lit et les modifie.
+-- Les clients passent commande uniquement via la fonction place_order ci-dessous.
+drop policy if exists "Lecture des commandes par l'admin" on public.orders;
+create policy "Lecture des commandes par l'admin" on public.orders
+  for select to authenticated using (public.is_admin());
+
+drop policy if exists "Mise à jour des commandes par l'admin" on public.orders;
+create policy "Mise à jour des commandes par l'admin" on public.orders
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+-- (aucune règle sur admins : la table n'est lisible que via is_admin)
+
+-- ---------- Passer une commande ---------------------------------------------
+-- Recalcule les prix depuis la table products (le client ne peut pas les modifier)
+-- et vérifie les champs obligatoires. Renvoie le numéro de commande.
+
+create or replace function public.place_order(payload jsonb)
+returns text
+language plpgsql security definer set search_path = public
+as $$
+declare
+  delivery_fee constant integer := 590;   -- garder la même valeur que deliveryFeeCents dans js/config.js
+  alphabet     constant text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  item         jsonb;
+  product      public.products;
+  qty          integer;
+  lines        jsonb := '[]'::jsonb;
+  subtotal     integer := 0;
+  new_code     text;
+begin
+  if jsonb_typeof(payload -> 'items') <> 'array'
+     or jsonb_array_length(payload -> 'items') = 0 then
+    raise exception 'Votre panier est vide.';
+  end if;
+  if jsonb_array_length(payload -> 'items') > 50 then
+    raise exception 'Trop d''articles dans le panier.';
+  end if;
+
+  for item in select * from jsonb_array_elements(payload -> 'items') loop
+    qty := (item ->> 'qty')::integer;
+    if qty is null or qty < 1 or qty > 99 then
+      raise exception 'Quantité invalide.';
+    end if;
+
+    select * into product from public.products
+     where id = (item ->> 'productId')::uuid and active;
+    if not found then
+      raise exception 'Un article de votre panier n''est plus disponible.';
+    end if;
+
+    lines := lines || jsonb_build_object(
+      'productId', product.id, 'name', product.name, 'priceCents', product.price_cents, 'qty', qty);
+    subtotal := subtotal + product.price_cents * qty;
+  end loop;
+
+  if coalesce(trim(payload #>> '{customer,name}'), '') = '' then
+    raise exception 'Indiquez votre nom.';
+  end if;
+  if length(regexp_replace(coalesce(payload #>> '{customer,phone}', ''), '\D', '', 'g')) < 9 then
+    raise exception 'Indiquez un numéro de téléphone valide.';
+  end if;
+  if coalesce(trim(payload #>> '{address,street}'), '') = ''
+     or coalesce(trim(payload #>> '{address,city}'), '') = '' then
+    raise exception 'Indiquez l''adresse de livraison.';
+  end if;
+  if coalesce(payload #>> '{address,zip}', '') !~ '^\d{5}$' then
+    raise exception 'Le code postal doit contenir 5 chiffres.';
+  end if;
+  if (payload #>> '{delivery,date}')::date < current_date then
+    raise exception 'Choisissez une date de livraison à venir.';
+  end if;
+
+  -- Numéro de commande unique, ex. AP-K7M2QX
+  loop
+    select 'AP-' || string_agg(substr(alphabet, 1 + floor(random() * length(alphabet))::integer, 1), '')
+      into new_code from generate_series(1, 6);
+    exit when not exists (select 1 from public.orders where code = new_code);
+  end loop;
+
+  insert into public.orders (
+    code, items, subtotal_cents, delivery_cents, total_cents,
+    customer, address, delivery_date, delivery_slot, card_message, notes
+  ) values (
+    new_code, lines, subtotal, delivery_fee, subtotal + delivery_fee,
+    jsonb_build_object(
+      'name',  left(trim(payload #>> '{customer,name}'), 100),
+      'phone', left(trim(payload #>> '{customer,phone}'), 30),
+      'email', left(coalesce(trim(payload #>> '{customer,email}'), ''), 120)),
+    jsonb_build_object(
+      'recipient', left(coalesce(trim(payload #>> '{address,recipient}'), ''), 100),
+      'street',    left(trim(payload #>> '{address,street}'), 200),
+      'zip',       payload #>> '{address,zip}',
+      'city',      left(trim(payload #>> '{address,city}'), 100),
+      'details',   left(coalesce(trim(payload #>> '{address,details}'), ''), 200)),
+    (payload #>> '{delivery,date}')::date,
+    left(coalesce(payload #>> '{delivery,slot}', ''), 60),
+    left(coalesce(payload ->> 'cardMessage', ''), 200),
+    left(coalesce(payload ->> 'notes', ''), 300)
+  );
+
+  return new_code;
+end;
+$$;
+
+-- ---------- Suivi client ----------------------------------------------------
+-- Le client retrouve ses commandes grâce à leur numéro, sans voir celles des autres
+-- ni aucune donnée personnelle.
+
+create or replace function public.orders_by_codes(codes text[])
+returns table (
+  id uuid, code text, status text, created_at timestamptz, items jsonb,
+  subtotal_cents integer, delivery_cents integer, total_cents integer,
+  delivery_date date, delivery_slot text
+)
+language sql stable security definer set search_path = public
+as $$
+  select o.id, o.code, o.status, o.created_at, o.items,
+         o.subtotal_cents, o.delivery_cents, o.total_cents,
+         o.delivery_date, o.delivery_slot
+    from public.orders o
+   where o.code = any (codes[1:30]);
+$$;
+
+grant execute on function public.place_order(jsonb)       to anon, authenticated;
+grant execute on function public.orders_by_codes(text[])  to anon, authenticated;
+grant execute on function public.is_admin()               to anon, authenticated;
+
+-- ---------- Temps réel (nouvelles commandes dans le tableau de bord) ---------
+
+do $$
+begin
+  alter publication supabase_realtime add table public.orders;
+exception when duplicate_object then null;
+end $$;
+
+-- ---------- Produits d'exemple (facultatif, à supprimer ensuite) ------------
+
+insert into public.products (name, category, price_cents, description)
+select * from (values
+  ('Bouquet de pivoines',        'bouquets', 4590, 'Pivoines roses de saison et feuillage d''eucalyptus, environ 40 cm.'),
+  ('Bouquet champêtre',          'bouquets', 3490, 'Fleurs des champs du moment, emballage kraft.'),
+  ('12 roses rouges',            'bouquets', 5290, 'Douze roses rouges longues tiges, ruban satin.'),
+  ('Press-on nude',              'nails',    2490, '24 faux ongles forme amande, colle et lime incluses. Taille à préciser.'),
+  ('Set French manucure',        'nails',    2790, 'Press-on French classique, forme carrée, finition brillante.'),
+  ('Coffret bougie & chocolats', 'autres',   2990, 'Bougie parfumée à la pivoine et ballotin de chocolats artisanaux.')
+) as sample(name, category, price_cents, description)
+where not exists (select 1 from public.products);
