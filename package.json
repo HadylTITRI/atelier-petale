@@ -9,6 +9,7 @@
     "start": "node server/index.js",
     "db:init": "node server/db-init.js",
     "admin:create": "node server/create-admin.js",
+    "dev": "bash -c 'set -a; source .env; set +a; node server/index.js'",
     "test": "node --test test/api.test.js"
   },
   "dependencies": {
