@@ -11,12 +11,16 @@ export function createMemoryRepo({ products = [], options = [], admins = [] } = 
   const seed = (p) => ({
     id: String(nextProductId++), name: p.name, category: p.category ?? "bouquets", priceCents: p.priceCents,
     description: p.description ?? "", imageUrl: p.imageUrl ?? "", active: p.active ?? true, createdAt: new Date().toISOString(),
+    optionIds: [...(p.optionIds ?? [])],
   });
   state.products = products.map(seed);
 
   const seedOption = (o) => ({
-    id: String(nextOptionId++), name: o.name, priceCents: o.priceCents, active: o.active ?? true, sortOrder: o.sortOrder ?? 0,
+    id: String(nextOptionId++), name: o.name, type: o.type ?? "toggle", priceCents: o.priceCents,
+    choices: [...(o.choices ?? [])], maxValue: o.maxValue ?? 0, active: o.active ?? true, sortOrder: o.sortOrder ?? 0,
   });
+  const copyProduct = (p) => ({ ...p, optionIds: [...p.optionIds] });
+  const copyOption = (o) => ({ ...o, choices: [...o.choices] });
   state.options = options.map(seedOption);
   // Même tri que repo-mysql.js : ORDER BY sort_order, name, id
   const byDisplayOrder = (a, b) => a.sortOrder - b.sortOrder || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || Number(a.id) - Number(b.id);
@@ -26,21 +30,21 @@ export function createMemoryRepo({ products = [], options = [], admins = [] } = 
     async ping() {},
 
     async listProducts({ includeHidden = false } = {}) {
-      return state.products.filter((p) => includeHidden || p.active).map((p) => ({ ...p }));
+      return state.products.filter((p) => includeHidden || p.active).map(copyProduct);
     },
     async getProductsByIds(ids) {
-      return state.products.filter((p) => ids.includes(p.id)).map((p) => ({ ...p }));
+      return state.products.filter((p) => ids.includes(p.id)).map(copyProduct);
     },
     async createProduct(product) {
       const created = seed(product);
       state.products.push(created);
-      return { ...created };
+      return copyProduct(created);
     },
     async updateProduct(id, product) {
       const index = state.products.findIndex((p) => p.id === id);
       if (index < 0) return null;
-      state.products[index] = { ...state.products[index], ...product };
-      return { ...state.products[index] };
+      state.products[index] = { ...state.products[index], ...product, optionIds: [...product.optionIds] };
+      return copyProduct(state.products[index]);
     },
     async deleteProduct(id) {
       const before = state.products.length;
@@ -49,31 +53,34 @@ export function createMemoryRepo({ products = [], options = [], admins = [] } = 
     },
 
     async listOptions({ includeHidden = false } = {}) {
-      return state.options.filter((o) => includeHidden || o.active).sort(byDisplayOrder).map((o) => ({ ...o }));
+      return state.options.filter((o) => includeHidden || o.active).sort(byDisplayOrder).map(copyOption);
     },
     async getOptionsByIds(ids) {
-      return state.options.filter((o) => ids.includes(o.id)).map((o) => ({ ...o }));
+      return state.options.filter((o) => ids.includes(o.id)).map(copyOption);
     },
-    async createOption(option) {
+    async createOption({ addToAllProducts, ...option }) {
       const created = seedOption(option);
       state.options.push(created);
-      return { ...created };
+      if (addToAllProducts) state.products.forEach((p) => p.optionIds.push(created.id));
+      return copyOption(created);
     },
-    async updateOption(id, option) {
+    async updateOption(id, { addToAllProducts, ...option }) {
       const index = state.options.findIndex((o) => o.id === id);
       if (index < 0) return null;
-      state.options[index] = { ...state.options[index], ...option };
-      return { ...state.options[index] };
+      state.options[index] = { ...state.options[index], ...option, choices: [...option.choices] };
+      return copyOption(state.options[index]);
     },
     async setOptionActive(id, active) {
       const option = state.options.find((o) => o.id === id);
       if (!option) return null;
       option.active = active;
-      return { ...option };
+      return copyOption(option);
     },
     async deleteOption(id) {
       const before = state.options.length;
       state.options = state.options.filter((o) => o.id !== id);
+      // Comme ON DELETE CASCADE sur product_options.
+      state.products.forEach((p) => (p.optionIds = p.optionIds.filter((optionId) => optionId !== id)));
       return state.options.length < before;
     },
 

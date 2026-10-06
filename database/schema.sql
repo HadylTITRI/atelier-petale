@@ -28,22 +28,36 @@ CREATE TABLE IF NOT EXISTS products (
 ) ENGINE = InnoDB;
 
 -- ---------- Options ---------------------------------------------------------
--- Options que le client peut ajouter à n'importe quel bouquet (emballage cadeau,
--- ruban…), gérées depuis l'espace admin. Une option désactivée n'est plus proposée
--- ni acceptée, mais les commandes passées gardent leur nom et leur prix (copiés dans
--- order_items.options). Cette définition est reprise dans server/db-init.js :
--- gardez les deux identiques (un test le vérifie).
+-- Options que le client peut ajouter à un bouquet, gérées depuis l'espace admin.
+-- Chaque bouquet propose les siennes (table product_options). Une option désactivée
+-- n'est plus proposée ni acceptée, mais les commandes passées gardent son nom, la valeur
+-- saisie et son prix (copiés dans order_items.options).
+-- Les colonnes type, choices et max_value sont ajoutées par server/db-init.js sur une base
+-- créée avant elles : gardez les deux fichiers identiques (un test le vérifie).
 
 CREATE TABLE IF NOT EXISTS `options` (
   id           INT UNSIGNED      NOT NULL AUTO_INCREMENT,
   name         VARCHAR(80)       NOT NULL,
-  price_cents  INT UNSIGNED      NOT NULL DEFAULT 0,      -- en centimes de dinar : 40000 = 400 DA
+  price_cents  INT UNSIGNED      NOT NULL DEFAULT 0,      -- en centimes de dinar : 40000 = 400 DA (par unité pour une quantité)
+  type         ENUM('toggle', 'text', 'choice', 'quantity') NOT NULL DEFAULT 'toggle',
+  choices      JSON              NULL,                    -- type choice : ["Rose poudré", "Blanc"]
+  max_value    SMALLINT UNSIGNED NOT NULL DEFAULT 0,      -- type text : caractères max ; type quantity : nombre max
   active       BOOLEAN           NOT NULL DEFAULT TRUE,   -- proposée dans la boutique
   sort_order   SMALLINT UNSIGNED NOT NULL DEFAULT 0,      -- ordre d'affichage, du plus petit au plus grand
   created_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_options_display (active, sort_order, name)
+) ENGINE = InnoDB;
+
+-- Options proposées par chaque bouquet. Supprimer un bouquet ou une option retire le lien.
+CREATE TABLE IF NOT EXISTS product_options (
+  product_id   INT UNSIGNED NOT NULL,
+  option_id    INT UNSIGNED NOT NULL,
+  PRIMARY KEY (product_id, option_id),
+  KEY idx_product_options_option (option_id),
+  CONSTRAINT fk_product_options_product FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE,
+  CONSTRAINT fk_product_options_option FOREIGN KEY (option_id) REFERENCES `options` (id) ON DELETE CASCADE
 ) ENGINE = InnoDB;
 
 -- ---------- Commandes -------------------------------------------------------
@@ -97,7 +111,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   product_name      VARCHAR(80)       NOT NULL,
   unit_price_cents  INT UNSIGNED      NOT NULL,                 -- prix du bouquet seul
   options_cents     INT UNSIGNED      NOT NULL DEFAULT 0,       -- total des options, par bouquet
-  options           JSON              NULL,                     -- ex. [{"id":"3","name":"Emballage cadeau premium","priceCents":40000}]
+  options           JSON              NULL,                     -- ex. [{"id":"1","name":"Initiales sur le bouquet","value":"AM","priceCents":30000}]
   quantity          SMALLINT UNSIGNED NOT NULL,
   PRIMARY KEY (id),
   KEY idx_order_items_order (order_id),
@@ -135,15 +149,16 @@ FROM (
 ) AS sample
 WHERE NOT EXISTS (SELECT 1 FROM products);
 
--- Options d'exemple, reprises de l'ancienne configuration. Repris aussi dans server/db-init.js.
-INSERT INTO `options` (name, price_cents, sort_order)
-SELECT sample.name, sample.price_cents, sample.sort_order
+-- Options d'exemple. Lors d'une première installation, server/db-init.js les propose ensuite
+-- pour tous les bouquets ; l'admin ajuste bouquet par bouquet.
+INSERT INTO `options` (name, price_cents, sort_order, type, choices, max_value)
+SELECT sample.name, sample.price_cents, sample.sort_order, sample.type, sample.choices, sample.max_value
 FROM (
-  SELECT 'Initiales sur le bouquet' AS name, 30000 AS price_cents, 10 AS sort_order
-  UNION ALL SELECT 'Prénom sur un ruban', 50000, 20
-  UNION ALL SELECT '3 papillons artificiels', 30000, 30
-  UNION ALL SELECT 'Ruban satin', 15000, 40
-  UNION ALL SELECT 'Emballage cadeau premium', 40000, 50
+  SELECT 'Initiales sur le bouquet' AS name, 30000 AS price_cents, 10 AS sort_order, 'text' AS type, NULL AS choices, 3 AS max_value
+  UNION ALL SELECT 'Prénom sur un ruban', 50000, 20, 'text', NULL, 20
+  UNION ALL SELECT 'Papillons artificiels', 10000, 30, 'quantity', NULL, 12
+  UNION ALL SELECT 'Ruban satin', 15000, 40, 'choice', '["Rose poudré", "Blanc", "Doré", "Rouge", "Noir"]', 0
+  UNION ALL SELECT 'Emballage cadeau premium', 40000, 50, 'toggle', NULL, 0
 ) AS sample
 WHERE NOT EXISTS (SELECT 1 FROM `options`);
 
@@ -176,5 +191,5 @@ WHERE NOT EXISTS (SELECT 1 FROM `options`);
 --   ALTER TABLE order_items
 --     ADD COLUMN options_cents INT UNSIGNED NOT NULL DEFAULT 0 AFTER unit_price_cents,
 --     ADD COLUMN options JSON NULL AFTER options_cents;
--- La table `options` n'a pas besoin de migration manuelle : npm run db:init la crée
--- si elle manque, sans toucher aux autres tables.
+-- Les tables `options` et product_options n'ont pas besoin de migration manuelle :
+-- node --env-file=.env server/db-init.js les crée ou les complète, sans toucher aux données.

@@ -1,7 +1,7 @@
 /**
- * Crée les tables : `npm run db:init`.
+ * Crée les tables : `node --env-file=.env server/db-init.js`.
  * Exécute database/schema.sql sur la base indiquée dans .env (qui doit déjà exister :
- * chez les hébergeurs MySQL, elle est créée avec le service), puis les mises à niveau
+ * chez les hébergeurs MySQL, elle est créée avec le service), avec les mises à niveau
  * ci-dessous pour une base créée avec une version précédente.
  * Sans danger à relancer : rien n'est recréé ni effacé si c'est déjà en place.
  */
@@ -10,41 +10,49 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
- * Table des options (communes à tous les bouquets). Même définition que dans
- * database/schema.sql : test/api.test.js vérifie que les deux restent identiques.
+ * Colonnes de la table `options` ajoutées après sa création, dans l'ordre, avec la colonne
+ * qui les précède. Mêmes définitions que dans database/schema.sql : un test le vérifie.
  */
-export const OPTIONS_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS \`options\` (
-  id           INT UNSIGNED      NOT NULL AUTO_INCREMENT,
-  name         VARCHAR(80)       NOT NULL,
-  price_cents  INT UNSIGNED      NOT NULL DEFAULT 0,
-  active       BOOLEAN           NOT NULL DEFAULT TRUE,
-  sort_order   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
-  created_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_options_display (active, sort_order, name)
-) ENGINE = InnoDB`;
-
-/** Options d'exemple, ajoutées seulement si la table est vide (elles reprennent l'ancienne configuration). */
-export const SAMPLE_OPTIONS = [
-  { name: "Initiales sur le bouquet", priceCents: 30000, sortOrder: 10 },
-  { name: "Prénom sur un ruban", priceCents: 50000, sortOrder: 20 },
-  { name: "3 papillons artificiels", priceCents: 30000, sortOrder: 30 },
-  { name: "Ruban satin", priceCents: 15000, sortOrder: 40 },
-  { name: "Emballage cadeau premium", priceCents: 40000, sortOrder: 50 },
+export const OPTION_COLUMNS = [
+  ["type", "ENUM('toggle', 'text', 'choice', 'quantity') NOT NULL DEFAULT 'toggle'", "price_cents"],
+  ["choices", "JSON NULL", "type"],
+  ["max_value", "SMALLINT UNSIGNED NOT NULL DEFAULT 0", "choices"],
 ];
 
-/** Crée la table des options si elle manque, puis y met les exemples si elle est vide. Idempotent. */
-export async function ensureOptionsTable(connection) {
-  await connection.query(OPTIONS_TABLE_SQL);
-  const [[{ total }]] = await connection.query("SELECT COUNT(*) AS total FROM `options`");
-  if (Number(total) === 0) {
+/**
+ * Options d'exemple de la version précédente (toutes des cases à cocher) qui deviennent des
+ * champs à remplir, au même prix. Appliqué une seule fois, quand la colonne `type` est ajoutée.
+ */
+const TYPED_SAMPLES = [
+  ["Initiales sur le bouquet", "text", null, 3],
+  ["Prénom sur un ruban", "text", null, 20],
+  ["Ruban satin", "choice", JSON.stringify(["Rose poudré", "Blanc", "Doré", "Rouge", "Noir"]), 0],
+];
+
+async function existingTables(connection) {
+  const [rows] = await connection.query(
+    "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()",
+  );
+  return new Set(rows.map((row) => row.name.toLowerCase()));
+}
+
+/** Ajoute à `options` les colonnes qui lui manquent. Renvoie true si `type` vient d'être ajoutée. */
+async function addOptionColumns(connection) {
+  const [rows] = await connection.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'options'",
+  );
+  const present = new Set(rows.map((row) => row.name.toLowerCase()));
+  for (const [name, definition, after] of OPTION_COLUMNS) {
+    if (!present.has(name)) await connection.query(`ALTER TABLE \`options\` ADD COLUMN ${name} ${definition} AFTER ${after}`);
+  }
+  if (present.has("type")) return false;
+  for (const [name, type, choices, maxValue] of TYPED_SAMPLES) {
     await connection.query(
-      "INSERT INTO `options` (name, price_cents, sort_order) VALUES ?",
-      [SAMPLE_OPTIONS.map((o) => [o.name, o.priceCents, o.sortOrder])],
+      "UPDATE `options` SET type = ?, choices = ?, max_value = ? WHERE name = ? AND type = 'toggle'",
+      [type, choices, maxValue, name],
     );
   }
+  return true;
 }
 
 async function main() {
@@ -57,15 +65,25 @@ async function main() {
 
   const connection = await createConnection(process.env, { multipleStatements: true });
   try {
+    const before = await existingTables(connection);
+    // Avant schema.sql : ses options d'exemple utilisent les nouvelles colonnes.
+    if (before.has("options")) await addOptionColumns(connection);
     await connection.query(sql);
-    await ensureOptionsTable(connection);
+
+    // Première fois que chaque bouquet a ses propres options : on garde le fonctionnement
+    // d'avant, où toutes les options étaient proposées pour tous les bouquets.
+    if (!before.has("product_options")) {
+      await connection.query(
+        "INSERT IGNORE INTO product_options (product_id, option_id) SELECT p.id, o.id FROM products p CROSS JOIN `options` o",
+      );
+    }
     console.log("Tables créées (ou déjà présentes).");
   } finally {
     await connection.end();
   }
 }
 
-// Lancé directement (npm run db:init) : on exécute. Importé (tests) : on ne fait rien.
+// Lancé directement : on exécute. Importé (tests) : on ne fait rien.
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   await main();
 }

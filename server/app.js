@@ -149,6 +149,15 @@ export function createApp({ repo, secret, production = false, trustProxy = false
 
   /* ------------------------------ API ------------------------------ */
 
+  /** Les options choisies pour un produit doivent exister (actives ou non). */
+  async function checkProductOptions(product) {
+    if (product.optionIds.length) {
+      const found = await repo.getOptionsByIds(product.optionIds);
+      if (found.length !== product.optionIds.length) throw new HttpError(400, "Une option choisie pour ce produit n'existe plus.");
+    }
+    return product;
+  }
+
   async function api(req, res, url) {
     const { pathname } = url;
     const method = req.method;
@@ -162,7 +171,8 @@ export function createApp({ repo, secret, production = false, trustProxy = false
 
     if (method === "GET" && pathname === "/api/options") {
       const options = await repo.listOptions({ includeHidden: false });
-      return send(res, 200, options.map(({ id, name, priceCents, sortOrder }) => ({ id, name, priceCents, sortOrder })));
+      return send(res, 200, options.map(({ id, name, type, priceCents, choices, maxValue, sortOrder }) =>
+        ({ id, name, type, priceCents, choices, maxValue, sortOrder })));
     }
 
     if (method === "POST" && pathname === "/api/orders") {
@@ -220,13 +230,13 @@ export function createApp({ repo, secret, production = false, trustProxy = false
         return send(res, 200, await repo.listProducts({ includeHidden: true }));
       }
       if (method === "POST" && pathname === "/api/admin/products") {
-        const product = validateProduct(await readJson(req));
+        const product = await checkProductOptions(validateProduct(await readJson(req)));
         return send(res, 201, await repo.createProduct(product));
       }
 
       const productMatch = pathname.match(/^\/api\/admin\/products\/(\d+)$/);
       if (productMatch && method === "PUT") {
-        const product = validateProduct(await readJson(req));
+        const product = await checkProductOptions(validateProduct(await readJson(req)));
         const saved = await repo.updateProduct(productMatch[1], product);
         if (!saved) throw new HttpError(404, "Produit introuvable.");
         return send(res, 200, saved);

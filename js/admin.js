@@ -4,7 +4,7 @@
  */
 import { CONFIG, STATUSES, ACTIVE_STATUSES } from "./config.js";
 import { store } from "./store/index.js";
-import { describeOption, lineUnitCents } from "./options.js";
+import { DEFAULT_MAX, OPTION_TYPES, describeOption, lineUnitCents, sortOptions } from "./options.js";
 import {
   $, $$, escapeHtml, formatPrice, formatDate, formatDateTime, isoDay, parsePrice, toast,
   productVisual, categoryLabel, statusLabel,
@@ -242,6 +242,7 @@ async function loadProducts() {
     toast(error.message);
   }
   renderProducts();
+  renderOptions(); // nombre de bouquets par option
 }
 
 function renderProducts() {
@@ -255,7 +256,7 @@ function renderProducts() {
       <div class="thumb">${productVisual(p, 40)}</div>
       <div>
         <strong>${escapeHtml(p.name)}</strong>
-        <div class="muted num" style="font-size:13px">${escapeHtml(categoryLabel(p.category))} · ${formatPrice(p.priceCents)}${p.active ? "" : " · masqué"}</div>
+        <div class="muted num" style="font-size:13px">${escapeHtml(categoryLabel(p.category))} · ${formatPrice(p.priceCents)} · ${optionCount(p)}${p.active ? "" : " · masqué"}</div>
       </div>
       <div class="actions">
         <button type="button" class="btn" data-edit-product="${escapeHtml(p.id)}">Modifier</button>
@@ -267,6 +268,26 @@ function renderProducts() {
   `).join("");
 }
 
+const optionCount = (product) => {
+  const n = product.optionIds?.length ?? 0;
+  return n ? `${n} option${n > 1 ? "s" : ""}` : "sans option";
+};
+
+/** Cases à cocher des options dans le formulaire produit, cochées selon `selected`. */
+function renderProductOptions(selected = []) {
+  const list = $("#pf-option-list");
+  const chosen = new Set(selected);
+  list.innerHTML = state.options.length
+    ? sortOptions(state.options).map((o) => `
+        <label class="checkbox">
+          <input type="checkbox" value="${escapeHtml(o.id)}" ${chosen.has(o.id) ? "checked" : ""}>
+          ${escapeHtml(o.name)} <span class="muted">· ${escapeHtml(OPTION_TYPES[o.type] ?? "")}${o.active ? "" : " · désactivée"}</span>
+        </label>`).join("")
+    : `<span class="hint">Aucune option : créez-en dans l'onglet Options.</span>`;
+}
+
+const checkedProductOptions = () => $$("#pf-option-list input:checked").map((input) => input.value);
+
 function fillProductForm(product) {
   $("#pf-id").value = product?.id ?? "";
   $("#pf-name").value = product?.name ?? "";
@@ -275,6 +296,7 @@ function fillProductForm(product) {
   $("#pf-description").value = product?.description ?? "";
   $("#pf-image").value = product?.imageUrl ?? "";
   $("#pf-active").checked = product?.active ?? true;
+  renderProductOptions(product?.optionIds ?? []);
 
   $("#product-form-title").textContent = product ? "Modifier le produit" : "Ajouter un produit";
   $("#pf-submit").textContent = product ? "Enregistrer" : "Ajouter le produit";
@@ -294,6 +316,7 @@ async function submitProduct(event) {
     description: $("#pf-description").value.trim(),
     imageUrl: $("#pf-image").value.trim(),
     active: $("#pf-active").checked,
+    optionIds: checkedProductOptions(),
   };
 
   if (!product.name || !(product.priceCents > 0)) {
@@ -341,7 +364,7 @@ async function deleteProduct(id) {
 }
 
 /* ==========================================================================
-   Options (communes à tous les bouquets)
+   Options (chaque bouquet choisit les siennes dans le formulaire produit)
    ========================================================================== */
 
 /** 40000 centimes → « 400 » ; 40050 → « 400,5 » (pour le champ du formulaire). */
@@ -354,6 +377,24 @@ async function loadOptions() {
     toast(error.message);
   }
   renderOptions();
+  // Le formulaire produit affiche la liste des options : on la garde à jour, sans perdre les cases cochées.
+  const alreadyShown = $$("#pf-option-list input").length > 0;
+  renderProductOptions(alreadyShown ? checkedProductOptions() : currentProductOptionIds());
+}
+
+const currentProductOptionIds = () => state.products.find((p) => p.id === $("#pf-id").value)?.optionIds ?? [];
+
+/** Combien de bouquets proposent une option. */
+const productsUsing = (option) => state.products.filter((p) => p.optionIds?.includes(option.id)).length;
+
+/** Détail affiché sous le nom d'une option : type, prix, réglages. */
+function optionSummary(o) {
+  const price = o.priceCents ? `+${formatPrice(o.priceCents)}${o.type === "quantity" ? " / unité" : ""}` : "Offerte";
+  const detail = o.type === "choice" ? ` (${o.choices.join(", ")})`
+    : o.type === "text" ? ` (${o.maxValue} car. max)`
+    : o.type === "quantity" ? ` (jusqu'à ${o.maxValue})` : "";
+  const used = productsUsing(o);
+  return `${OPTION_TYPES[o.type] ?? ""}${detail} · ${price} · ${used ? `${used} bouquet${used > 1 ? "s" : ""}` : "aucun bouquet"}`;
 }
 
 function renderOptions() {
@@ -366,7 +407,7 @@ function renderOptions() {
     <div class="product-row option-row ${o.active ? "" : "hidden-product"}">
       <div>
         <strong>${escapeHtml(o.name)}</strong>
-        <div class="muted num" style="font-size:13px">${o.priceCents ? `+${formatPrice(o.priceCents)}` : "Offerte"} · ordre ${o.sortOrder}${o.active ? "" : " · désactivée"}</div>
+        <div class="muted num" style="font-size:13px">${escapeHtml(optionSummary(o))} · ordre ${o.sortOrder}${o.active ? "" : " · désactivée"}</div>
       </div>
       <div class="actions">
         <button type="button" class="btn" data-edit-option="${escapeHtml(o.id)}">Modifier</button>
@@ -385,12 +426,29 @@ function fillOptionForm(option) {
   $("#of-price").value = option ? priceInput(option.priceCents) : "";
   $("#of-order").value = option?.sortOrder ?? nextSortOrder();
   $("#of-active").checked = option?.active ?? true;
+  $("#of-type").value = option?.type ?? "toggle";
+  $("#of-choices").value = (option?.choices ?? []).join("\n");
+  $("#of-max").value = option?.maxValue || "";
+  $("#of-all").checked = false;
+  $("#of-all-field").hidden = Boolean(option); // seulement à la création
+  showOptionTypeFields();
 
   $("#option-form-title").textContent = option ? "Modifier l'option" : "Ajouter une option";
   $("#of-submit").textContent = option ? "Enregistrer" : "Ajouter l'option";
   $("#of-cancel").hidden = !option;
   $("#option-error").hidden = true;
   if (option) $("#of-name").focus();
+}
+
+/** Affiche les champs utiles au type choisi (liste de choix, maximum). */
+function showOptionTypeFields() {
+  const type = $("#of-type").value;
+  $("#of-choices-field").hidden = type !== "choice";
+  $("#of-max-field").hidden = type !== "text" && type !== "quantity";
+  $("#of-max-label").textContent = type === "text" ? "Nombre de caractères maximum" : "Nombre maximum que le client peut demander";
+  $("#of-max").max = type === "text" ? 200 : 99;
+  $("#of-max").placeholder = String(DEFAULT_MAX[type] ?? "");
+  $("#of-price-hint").textContent = type === "quantity" ? "Prix d'une unité : il est multiplié par le nombre demandé. 0 = offert." : "0 pour une option offerte.";
 }
 
 /** Ordre proposé pour une nouvelle option : après la dernière, par pas de 10. */
@@ -401,12 +459,18 @@ async function submitOption(event) {
   const errorEl = $("#option-error");
   const priceText = $("#of-price").value.trim();
   const orderText = $("#of-order").value.trim();
+  const type = $("#of-type").value;
+  const maxText = $("#of-max").value.trim();
   const option = {
     id: $("#of-id").value || undefined,
     name: $("#of-name").value.trim(),
+    type,
     priceCents: priceText ? parsePrice(priceText) : NaN,
+    choices: type === "choice" ? $("#of-choices").value.split("\n").map((c) => c.trim()).filter(Boolean) : [],
+    maxValue: maxText ? Number(maxText) : 0,
     sortOrder: orderText ? Number(orderText) : 0,
     active: $("#of-active").checked,
+    addToAllProducts: !$("#of-id").value && $("#of-all").checked,
   };
 
   if (!option.name || !(option.priceCents >= 0)) {
@@ -420,9 +484,17 @@ async function submitOption(event) {
     return;
   }
 
+  if (type === "choice" && !option.choices.length) {
+    errorEl.textContent = "Indiquez au moins un choix, un par ligne.";
+    errorEl.hidden = false;
+    return;
+  }
+
   try {
     await store.saveOption(option);
     toast(option.id ? "Option enregistrée" : "Option ajoutée");
+    // Une option ajoutée à tous les bouquets change aussi la liste des produits.
+    if (option.addToAllProducts) await loadProducts();
     await loadOptions();
     fillOptionForm(null);
     hooks.onCatalogChange();
@@ -464,6 +536,7 @@ async function deleteOption(id) {
   try {
     await store.deleteOption(id);
     toast("Option supprimée");
+    await loadProducts(); // l'option est retirée des bouquets
     await loadOptions();
     if ($("#of-id").value === id) fillOptionForm(null);
     hooks.onCatalogChange();
@@ -503,6 +576,7 @@ export function initAdmin(appHooks) {
   $("#pf-cancel").addEventListener("click", () => fillProductForm(null));
   $("#option-form").addEventListener("submit", submitOption);
   $("#of-cancel").addEventListener("click", () => fillOptionForm(null));
+  $("#of-type").addEventListener("change", showOptionTypeFields);
 
   $("#view-admin").addEventListener("click", (event) => {
     const el = event.target.closest("button");

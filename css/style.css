@@ -403,6 +403,10 @@ main.container { padding-block: 28px 64px; min-height: 70vh; }
 .product-row .actions { display: flex; gap: 6px; }
 /* Options : même liste que les produits, sans vignette. */
 .product-row.option-row { grid-template-columns: 1fr auto; }
+/* Formulaire produit : options proposées pour le bouquet. */
+.form .option-picker { gap: 6px; }
+.form .option-picker legend { font-family: inherit; font-size: 13px; font-weight: 600; }
+.option-picker .checkbox .muted { font-size: 12px; }
 
 /* 8. Utilitaires / responsive -------------------------------------------- */
 @media (max-width: 860px) {

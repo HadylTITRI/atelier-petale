@@ -108,19 +108,27 @@ Créez un moniteur gratuit sur [UptimeRobot](https://uptimerobot.com) qui visite
 
 ## Options des bouquets
 
-Les options (emballage cadeau, ruban, vase…) sont **communes à tous les bouquets** et se gèrent dans l'espace admin, onglet **Options** : nom, prix en DA (0 pour une option offerte), ordre d'affichage (les plus petits nombres en premier), proposée ou non dans la boutique. Elles sont enregistrées dans la table `options`.
+Les options se gèrent dans l'espace admin, onglet **Options** : nom, ce que le client fait, prix en DA (0 = offerte), ordre d'affichage, proposée ou non. Quatre types :
 
-- Le client coche les options qu'il veut ; s'il faut une précision (initiales, prénom, couleur), il l'écrit dans « Précisions pour l'atelier ».
-- À la commande, le serveur relit chaque option en base, **recalcule son prix** et refuse une option inconnue ou désactivée. Le nom et le prix de chaque option sont copiés dans la commande (`order_items.options`) : modifier ou supprimer une option ensuite ne change pas les commandes passées.
-- **Désactiver** une option la retire de la boutique tout en la gardant pour plus tard ; **supprimer** l'efface définitivement.
+| Type | Le client… | Exemple | Prix |
+|---|---|---|---|
+| Case à cocher | coche | Emballage cadeau | fixe |
+| Texte à écrire | écrit un texte (longueur max réglable) | Initiales « AM », prénom | fixe s'il écrit quelque chose |
+| Choix dans une liste | choisit une valeur (un choix par ligne) | Couleur du ruban | fixe s'il choisit |
+| Quantité | indique un nombre (maximum réglable) | Papillons × 3 | prix d'une unité × nombre |
 
-**Base déjà en service ?** Relancez simplement l'initialisation, sans risque pour vos données :
+**Chaque bouquet propose ses propres options** : dans l'onglet **Produits**, cochez celles du bouquet. À la création d'une option, « Ajouter à tous les bouquets » évite de passer sur chaque produit.
+
+- À la commande, le serveur relit en base les options du bouquet, vérifie ce que le client a rempli (longueur, choix, nombre) et **recalcule le prix**. Une option inconnue, désactivée ou non proposée pour ce bouquet est refusée. Le nom, la valeur saisie et le prix sont copiés dans la commande (`order_items.options`) : modifier ou supprimer une option ensuite ne change pas les commandes passées.
+- **Désactiver** une option la retire de la boutique tout en la gardant ; **supprimer** l'efface et la retire des bouquets.
+
+**Base déjà en service ?** Relancez l'initialisation, sans risque pour vos données :
 ```
 node --env-file=.env server/db-init.js
 ```
-Elle crée la table `options` si elle manque et y met les cinq options d'exemple si elle est vide (comme pour les bouquets : une table vidée est à nouveau remplie à la prochaine initialisation). Les anciennes options écrites dans `js/config.js` ne sont plus utilisées ; les commandes passées avant restent lisibles.
+Elle ajoute les colonnes et la table qui manquent (`options.type`, `choices`, `max_value`, table `product_options`). La première fois, toutes les options existantes sont proposées pour tous les bouquets, comme avant ; « Initiales sur le bouquet », « Prénom sur un ruban » et « Ruban satin » deviennent des champs à remplir.
 
-API : `GET /api/options` (public, options actives) ; avec connexion admin : `GET` et `POST /api/admin/options`, `PUT` et `DELETE /api/admin/options/:id`, `PATCH /api/admin/options/:id/active` avec `{ "active": true | false }`.
+API : `GET /api/options` (public, options actives) ; `GET /api/products` renvoie les `optionIds` de chaque bouquet ; avec connexion admin : `GET` et `POST /api/admin/options`, `PUT` et `DELETE /api/admin/options/:id`, `PATCH /api/admin/options/:id/active` avec `{ "active": true | false }`, et `optionIds` dans `POST`/`PUT /api/admin/products`.
 
 ## Personnaliser
 

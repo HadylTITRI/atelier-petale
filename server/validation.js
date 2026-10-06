@@ -4,7 +4,9 @@
  * et des options enregistrés en base, et de js/config.js (livraison).
  */
 import { CONFIG, STATUSES } from "../js/config.js";
-import { MAX_OPTIONS_PER_ITEM, UNAVAILABLE_OPTION, normalizeSelection } from "../js/options.js";
+import {
+  DEFAULT_MAX, MAX_OPTIONS_PER_ITEM, OPTION_TYPES, UNAVAILABLE_OPTION, normalizeSelection, optionsForProduct,
+} from "../js/options.js";
 import { HttpError, cleanLine, isRealDate, todayIn } from "./util.js";
 
 const bad = (message) => new HttpError(400, message);
@@ -69,41 +71,49 @@ export function validateOrder(body, now = new Date()) {
     if (!isObject(item)) throw bad("Commande invalide.");
     const qty = Number(item.qty);
     if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw bad("Quantité invalide dans votre panier.");
-    return { productId: String(item.productId ?? ""), qty, optionIds: optionIds(item.options) };
+    return { productId: String(item.productId ?? ""), qty, options: optionEntries(item.options) };
   });
   return clean;
 }
 
-/** Options cochées d'un article → identifiants (texte), sans doublon. Seul l'identifiant est lu : jamais le prix. */
-function optionIds(raw) {
+/**
+ * Options remplies pour un article → [{ id, value }]. Seuls l'identifiant et la valeur saisie
+ * sont lus, jamais le nom ni le prix ; la valeur est vérifiée ensuite par normalizeSelection.
+ */
+function optionEntries(raw) {
   if (raw == null) return [];
   if (!Array.isArray(raw)) throw bad("Commande invalide.");
   if (raw.length > MAX_OPTIONS_PER_ITEM) throw bad("Trop d'options choisies.");
-  const ids = raw.map((entry) => String(isObject(entry) ? entry.id ?? "" : entry ?? ""));
-  if (!ids.every((id) => /^\d{1,10}$/.test(id))) throw bad(UNAVAILABLE_OPTION);
-  return [...new Set(ids)];
+  return raw.map((entry) => {
+    const id = String(isObject(entry) ? entry.id ?? "" : entry ?? "");
+    if (!/^\d{1,10}$/.test(id)) throw bad(UNAVAILABLE_OPTION);
+    const value = isObject(entry) && "value" in entry ? entry.value : true;
+    if (!["string", "number", "boolean"].includes(typeof value)) throw bad("Commande invalide.");
+    if (typeof value === "string" && value.length > 200) throw bad("Une option contient un texte trop long.");
+    return { id, value };
+  });
 }
 
 /** Tous les identifiants d'options d'une commande nettoyée (pour une seule lecture en base). */
-export const orderOptionIds = (clean) => [...new Set(clean.items.flatMap((item) => item.optionIds))];
+export const orderOptionIds = (clean) => [...new Set(clean.items.flatMap((item) => item.options.map((o) => o.id)))];
 
 /**
  * Applique les vrais prix : bouquet (catalogue) + options (table `options`) + livraison.
- * `products` = bouquets trouvés en base pour les identifiants du panier.
- * `options`  = options trouvées en base pour les identifiants choisis ; une option
- *              absente ou désactivée fait refuser la commande.
- * Chaque option retenue garde son nom et son prix du moment : { id, name, priceCents }.
+ * `products` = bouquets trouvés en base pour les identifiants du panier, avec leurs `optionIds`.
+ * `options`  = options trouvées en base pour les identifiants choisis ; une option absente,
+ *              désactivée ou non proposée pour ce bouquet fait refuser la commande.
+ * Chaque option retenue garde son nom, la valeur saisie et son prix du moment : { id, name, value, priceCents }.
  */
 export function priceOrder(clean, products, options = []) {
   const byId = new Map(products.map((p) => [String(p.id), p]));
-  const items = clean.items.map(({ productId, qty, optionIds: ids }) => {
+  const items = clean.items.map(({ productId, qty, options: entries }) => {
     const product = byId.get(productId);
     if (!product || !product.active || !Object.hasOwn(CONFIG.categories, product.category)) {
       throw bad("Un article de votre panier n'est plus disponible.");
     }
     let chosen;
     try {
-      chosen = normalizeSelection(ids, options);
+      chosen = normalizeSelection(entries, optionsForProduct(product, options));
     } catch (error) {
       throw bad(error.message);
     }
@@ -135,7 +145,17 @@ export function validateProduct(body) {
     description: text(body.description, "La description", { max: 300 }),
     imageUrl,
     active: body.active !== false,
+    optionIds: idList(body.optionIds, "Options du produit invalides."),
   };
+}
+
+/** Liste d'identifiants (texte), sans doublon. */
+function idList(raw, message) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > 100) throw bad(message);
+  const ids = raw.map(String);
+  if (!ids.every((id) => /^\d{1,10}$/.test(id))) throw bad(message);
+  return [...new Set(ids)];
 }
 
 /** Option reçue de l'admin → option nettoyée. */
@@ -148,7 +168,34 @@ export function validateOption(body) {
   }
   const sortOrder = body.sortOrder === undefined || body.sortOrder === "" ? 0 : Number(body.sortOrder);
   if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 9999) throw bad("L'ordre d'affichage va de 0 à 9999.");
-  return { name, priceCents, sortOrder, active: body.active !== false };
+
+  const type = body.type ?? "toggle";
+  if (!Object.hasOwn(OPTION_TYPES, type)) throw bad("Type d'option inconnu.");
+
+  // Texte : nombre de caractères maximum. Quantité : nombre maximum. Sinon : inutilisé.
+  let maxValue = 0;
+  if (type === "text" || type === "quantity") {
+    const limit = type === "text" ? 200 : 99;
+    maxValue = body.maxValue === undefined || body.maxValue === "" || body.maxValue === 0 ? DEFAULT_MAX[type] : Number(body.maxValue);
+    if (!Number.isInteger(maxValue) || maxValue < 1 || maxValue > limit) {
+      throw bad(type === "text" ? "Le nombre de caractères va de 1 à 200." : "La quantité maximum va de 1 à 99.");
+    }
+  }
+
+  let choices = [];
+  if (type === "choice") {
+    if (!Array.isArray(body.choices)) throw bad("Indiquez les choix possibles, un par ligne.");
+    choices = [...new Set(body.choices.map((c) => cleanLine(c).replace(/\s+/g, " ")).filter(Boolean))];
+    if (!choices.length) throw bad("Indiquez au moins un choix.");
+    if (choices.length > 30) throw bad("30 choix maximum.");
+    if (choices.some((c) => c.length > 40)) throw bad("Chaque choix : 40 caractères maximum.");
+  }
+
+  return {
+    name, type, priceCents, choices, maxValue, sortOrder, active: body.active !== false,
+    // À la création seulement : proposer tout de suite l'option pour tous les bouquets.
+    addToAllProducts: body.addToAllProducts === true,
+  };
 }
 
 /** Activer / désactiver une option : { active: true | false }. */

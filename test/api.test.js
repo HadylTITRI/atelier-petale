@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { CONFIG } from "../js/config.js";
 import { hashPassword, signToken, verifyPassword, verifyToken } from "../server/auth.js";
 import { createApp } from "../server/app.js";
-import { OPTIONS_TABLE_SQL, SAMPLE_OPTIONS } from "../server/db-init.js";
-import { describeOption, normalizeSelection } from "../js/options.js";
+import { OPTION_COLUMNS } from "../server/db-init.js";
+import { describeOption, normalizeSelection, optionsForProduct } from "../js/options.js";
 import { createMemoryRepo } from "./memory-repo.js";
 
 const SECRET = "x".repeat(40);
@@ -33,15 +33,19 @@ let server, base, repo;
 
 before(async () => {
   repo = createMemoryRepo({
-    products: [
-      { name: "Bouquet pivoines", priceCents: 450000 },
-      { name: "Bouquet masqué", priceCents: 100000, active: false },
-    ],
     // Identifiants attribués dans l'ordre : "1", "2", "3".
+    products: [
+      { name: "Bouquet pivoines", priceCents: 450000, optionIds: ["1", "2", "3", "4", "5"] },
+      { name: "Bouquet masqué", priceCents: 100000, active: false },
+      { name: "Bouquet simple", priceCents: 300000, optionIds: ["1"] },
+    ],
+    // Identifiants attribués dans l'ordre : "1" à "5".
     options: [
       { name: "Emballage cadeau premium", priceCents: 40000, sortOrder: 20 },
-      { name: "Ruban satin", priceCents: 15000, sortOrder: 10 },
+      { name: "Ruban satin", type: "choice", choices: ["Blanc", "Doré"], priceCents: 15000, sortOrder: 10 },
       { name: "Papillons (désactivée)", priceCents: 30000, sortOrder: 30, active: false },
+      { name: "Initiales", type: "text", maxValue: 3, priceCents: 30000, sortOrder: 5 },
+      { name: "Papillons artificiels", type: "quantity", maxValue: 12, priceCents: 10000, sortOrder: 40 },
     ],
     admins: [{ email: ADMIN.email, passwordHash: await hashPassword(ADMIN.password) }],
   });
@@ -86,10 +90,11 @@ describe("auth (mots de passe et jetons)", () => {
 });
 
 describe("catalogue public", () => {
-  it("ne renvoie que les bouquets visibles", async () => {
+  it("ne renvoie que les bouquets visibles, avec leurs options", async () => {
     const products = await (await call("GET", "/api/products")).json();
-    assert.deepEqual(products.map((p) => p.name), ["Bouquet pivoines"]);
+    assert.deepEqual(products.map((p) => p.name), ["Bouquet pivoines", "Bouquet simple"]);
     assert.equal(typeof products[0].id, "string");
+    assert.deepEqual(products[1].optionIds, ["1"]);
   });
 });
 
@@ -98,20 +103,21 @@ describe("options publiques", () => {
     const res = await call("GET", "/api/options");
     assert.equal(res.status, 200);
     const options = await res.json();
-    assert.deepEqual(options.map((o) => o.name), ["Ruban satin", "Emballage cadeau premium"]);
-    assert.deepEqual(Object.keys(options[0]).sort(), ["id", "name", "priceCents", "sortOrder"]);
-    assert.equal(options[0].priceCents, 15000);
+    assert.deepEqual(options.map((o) => o.name), ["Initiales", "Ruban satin", "Emballage cadeau premium", "Papillons artificiels"]);
+    assert.deepEqual(Object.keys(options[0]).sort(), ["choices", "id", "maxValue", "name", "priceCents", "sortOrder", "type"]);
+    assert.deepEqual(options[1].choices, ["Blanc", "Doré"]);
   });
 });
 
 describe("commandes", () => {
-  it("enregistre une commande et recalcule le prix des options depuis la base", async () => {
+  it("enregistre ce que le client a rempli et recalcule le prix des options depuis la base", async () => {
     const order = validOrder({
       items: [{ productId: "1", qty: 2, options: [
         // un prix ou un nom envoyés par le navigateur doivent être ignorés
-        { id: "1", priceCents: 1, name: "Gratuit" },
-        { id: "2" },
-        { id: "2" }, // en double : compté une seule fois
+        { id: "1", value: true, priceCents: 1, name: "Gratuit" },
+        { id: "2", value: "Doré" },
+        { id: "4", value: "  AM " },
+        { id: "5", value: 3 },
       ] }],
     });
     const res = await call("POST", "/api/orders", { body: order });
@@ -120,30 +126,44 @@ describe("commandes", () => {
     assert.match(code, /^AP-[A-Z2-9]{6}$/);
 
     const stored = repo.state.orders.find((o) => o.code === code);
-    const extras = 40000 + 15000;
+    const extras = 30000 + 15000 + 40000 + 3 * 10000;
     assert.equal(stored.items[0].optionsCents, extras);
-    // Nom et prix copiés dans la commande, dans l'ordre d'affichage (ruban : ordre 10, emballage : 20).
+    // Nom, valeur et prix copiés dans la commande, dans l'ordre d'affichage.
     assert.deepEqual(stored.items[0].options, [
-      { id: "2", name: "Ruban satin", priceCents: 15000 },
-      { id: "1", name: "Emballage cadeau premium", priceCents: 40000 },
+      { id: "4", name: "Initiales", value: "AM", priceCents: 30000 },
+      { id: "2", name: "Ruban satin", value: "Doré", priceCents: 15000 },
+      { id: "1", name: "Emballage cadeau premium", value: true, priceCents: 40000 },
+      { id: "5", name: "Papillons artificiels", value: 3, priceCents: 30000 },
     ]);
     assert.equal(stored.subtotalCents, (450000 + extras) * 2);
     assert.equal(stored.totalCents, stored.subtotalCents + CONFIG.deliveryFeeCents);
   });
 
+  it("ignore les options laissées vides (case décochée, texte vide, « Sans », quantité 0)", async () => {
+    const res = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1, options: [
+      { id: "1", value: false }, { id: "2", value: "" }, { id: "4", value: "   " }, { id: "5", value: 0 },
+    ] }] }) });
+    assert.equal(res.status, 201);
+    const { code } = await res.json();
+    const stored = repo.state.orders.find((o) => o.code === code);
+    assert.deepEqual(stored.items[0].options, []);
+    assert.equal(stored.items[0].optionsCents, 0);
+  });
+
   it("une commande garde le nom et le prix de l'option même si l'admin la modifie ensuite", async () => {
-    const extra = repo.state.options.push({ id: "50", name: "Carte parfumée", priceCents: 20000, active: true, sortOrder: 5 });
-    assert.ok(extra);
+    repo.state.options.push({ id: "50", name: "Carte parfumée", type: "toggle", choices: [], maxValue: 0, priceCents: 20000, active: true, sortOrder: 5 });
+    repo.state.products[0].optionIds.push("50");
     const { code } = await (await call("POST", "/api/orders", {
-      body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "50" }] }] }),
+      body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "50", value: true }] }] }),
     })).json();
 
     const cookie = await login();
-    await call("PUT", "/api/admin/options/50", { cookie, body: { name: "Carte", priceCents: 99000, sortOrder: 5, active: true } });
+    await call("PUT", "/api/admin/options/50", { cookie, body: { name: "Carte", type: "toggle", priceCents: 99000, sortOrder: 5, active: true } });
     await call("DELETE", "/api/admin/options/50", { cookie });
+    assert.ok(!repo.state.products[0].optionIds.includes("50"), "option retirée du bouquet");
 
     const [order] = await (await call("POST", "/api/orders/lookup", { body: { codes: [code] } })).json();
-    assert.deepEqual(order.items[0].options, [{ id: "50", name: "Carte parfumée", priceCents: 20000 }]);
+    assert.deepEqual(order.items[0].options, [{ id: "50", name: "Carte parfumée", value: true, priceCents: 20000 }]);
     assert.equal(order.items[0].optionsCents, 20000);
   });
 
@@ -152,19 +172,27 @@ describe("commandes", () => {
     assert.equal(res.status, 201);
   });
 
+  const withOptions = (options, productId = "1") => validOrder({ items: [{ productId, qty: 1, options }] });
   const rejected = [
     ["produit masqué", validOrder({ items: [{ productId: "2", qty: 1, options: [] }] })],
     ["produit inconnu", validOrder({ items: [{ productId: "999", qty: 1, options: [] }] })],
     ["panier vide", validOrder({ items: [] })],
     ["quantité 0", validOrder({ items: [{ productId: "1", qty: 0, options: [] }] })],
     ["quantité décimale", validOrder({ items: [{ productId: "1", qty: 1.5, options: [] }] })],
-    ["option inconnue", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "999" }] }] })],
-    ["option désactivée", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "3" }] }] })],
-    ["option valide + option désactivée", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "1" }, { id: "3" }] }] })],
-    ["identifiant d'option non numérique", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "initiales", value: "AM" }] }] })],
-    ["identifiant d'option piégé", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "1 OR 1=1" }] }] })],
+    ["option inconnue", withOptions([{ id: "999", value: true }])],
+    ["option désactivée", withOptions([{ id: "3", value: true }])],
+    ["option valide + option désactivée", withOptions([{ id: "1", value: true }, { id: "3", value: true }])],
+    ["option non proposée pour ce bouquet", withOptions([{ id: "2", value: "Blanc" }], "3")],
+    ["texte trop long", withOptions([{ id: "4", value: "ABCD" }])],
+    ["choix hors liste", withOptions([{ id: "2", value: "Vert" }])],
+    ["nombre au-delà du maximum", withOptions([{ id: "5", value: 13 }])],
+    ["nombre décimal", withOptions([{ id: "5", value: 1.5 }])],
+    ["nombre négatif", withOptions([{ id: "5", value: -2 }])],
+    ["valeur d'option qui n'est pas un texte, un nombre ou oui/non", withOptions([{ id: "1", value: { a: 1 } }])],
+    ["identifiant d'option non numérique", withOptions([{ id: "initiales", value: "AM" }])],
+    ["identifiant d'option piégé", withOptions([{ id: "1 OR 1=1" }])],
     ["options qui ne sont pas une liste", validOrder({ items: [{ productId: "1", qty: 1, options: { id: "1" } }] })],
-    ["trop d'options", validOrder({ items: [{ productId: "1", qty: 1, options: Array.from({ length: 31 }, () => ({ id: "1" })) }] })],
+    ["trop d'options", withOptions(Array.from({ length: 31 }, () => ({ id: "1", value: true })))],
     ["téléphone trop court", validOrder({ customer: { name: "A", phone: "123", email: "" } })],
     ["code postal invalide", validOrder({ address: { street: "x", zip: "16A", city: "Alger" } })],
     ["date passée", validOrder({ delivery: { date: "2020-01-01", slot: CONFIG.deliverySlots[0] } })],
@@ -244,13 +272,19 @@ describe("administration", () => {
     assert.equal((await call("PATCH", "/api/admin/orders/9999/status", { cookie, body: { status: "livree" } })).status, 404);
   });
 
-  it("crée, modifie et supprime un produit", async () => {
+  it("crée, modifie et supprime un produit, avec ses options", async () => {
     const cookie = await login();
-    const created = await call("POST", "/api/admin/products", { cookie, body: { name: "Bouquet de roses", category: "bouquets", priceCents: 520000, description: "12 roses", imageUrl: "", active: true } });
+    const created = await call("POST", "/api/admin/products", { cookie, body: {
+      name: "Bouquet de roses", category: "bouquets", priceCents: 520000, description: "12 roses", imageUrl: "", active: true,
+      optionIds: ["4", "1", "4"],
+    } });
     assert.equal(created.status, 201);
     const product = await created.json();
-    const updated = await call("PUT", `/api/admin/products/${product.id}`, { cookie, body: { ...product, priceCents: 550000 } });
-    assert.equal((await updated.json()).priceCents, 550000);
+    assert.deepEqual(product.optionIds, ["4", "1"]);
+    const updated = await call("PUT", `/api/admin/products/${product.id}`, { cookie, body: { ...product, priceCents: 550000, optionIds: ["2"] } });
+    const saved = await updated.json();
+    assert.equal(saved.priceCents, 550000);
+    assert.deepEqual(saved.optionIds, ["2"]);
     assert.equal((await call("DELETE", `/api/admin/products/${product.id}`, { cookie })).status, 200);
     assert.equal((await call("DELETE", `/api/admin/products/${product.id}`, { cookie })).status, 404);
   });
@@ -258,7 +292,8 @@ describe("administration", () => {
   it("refuse les produits invalides", async () => {
     const cookie = await login();
     const base = { name: "X", category: "bouquets", priceCents: 1000, description: "", imageUrl: "", active: true };
-    for (const bad of [{ name: "" }, { category: "nails" }, { category: "constructor" }, { priceCents: 0 }, { priceCents: 12.5 }, { imageUrl: "javascript:alert(1)" }]) {
+    for (const bad of [{ name: "" }, { category: "nails" }, { category: "constructor" }, { priceCents: 0 }, { priceCents: 12.5 }, { imageUrl: "javascript:alert(1)" },
+      { optionIds: ["999"] }, { optionIds: "1" }, { optionIds: ["1 OR 1=1"] }]) {
       const res = await call("POST", "/api/admin/products", { cookie, body: { ...base, ...bad } });
       assert.equal(res.status, 400, JSON.stringify(bad));
     }
@@ -273,10 +308,13 @@ describe("administration", () => {
 
   it("crée, modifie, désactive, réactive et supprime une option", async () => {
     const cookie = await login();
-    const created = await call("POST", "/api/admin/options", { cookie, body: { name: "  Vase en verre  ", priceCents: 80000, sortOrder: 1 } });
+    const created = await call("POST", "/api/admin/options", { cookie, body: { name: "  Vase en verre  ", priceCents: 80000, sortOrder: 1, addToAllProducts: true } });
     assert.equal(created.status, 201);
     const option = await created.json();
-    assert.deepEqual({ ...option, id: undefined }, { id: undefined, name: "Vase en verre", priceCents: 80000, sortOrder: 1, active: true });
+    assert.deepEqual({ ...option, id: undefined }, {
+      id: undefined, name: "Vase en verre", type: "toggle", priceCents: 80000, choices: [], maxValue: 0, sortOrder: 1, active: true,
+    });
+    assert.ok(repo.state.products.every((p) => p.optionIds.includes(option.id)), "proposée pour tous les bouquets");
 
     // Proposée dans la boutique, en premier (ordre 1)
     assert.equal((await (await call("GET", "/api/options")).json())[0].id, option.id);
@@ -304,11 +342,33 @@ describe("administration", () => {
     assert.equal(gone.status, 400);
   });
 
+  it("crée des options à remplir : texte, choix dans une liste, quantité", async () => {
+    const cookie = await login();
+    const create = async (body) => (await call("POST", "/api/admin/options", { cookie, body: { priceCents: 1000, ...body } })).json();
+
+    const text = await create({ name: "Prénom", type: "text" });
+    assert.equal(text.maxValue, 30, "30 caractères par défaut");
+    const choice = await create({ name: "Couleur", type: "choice", choices: [" Rose  poudré ", "Rose poudré", "Blanc", ""], maxValue: 7 });
+    assert.deepEqual(choice.choices, ["Rose poudré", "Blanc"]);
+    assert.equal(choice.maxValue, 0);
+    const quantity = await create({ name: "Perles", type: "quantity", maxValue: 5 });
+    assert.equal(quantity.maxValue, 5);
+    // Une case à cocher ne garde ni choix ni maximum.
+    const toggle = await create({ name: "Carte", type: "toggle", choices: ["x"], maxValue: 4 });
+    assert.deepEqual([toggle.choices, toggle.maxValue], [[], 0]);
+    // Non proposées tant que l'admin ne les ajoute pas à un bouquet.
+    const refused = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: quantity.id, value: 2 }] }] }) });
+    assert.equal(refused.status, 400);
+  });
+
   it("refuse les options invalides", async () => {
     const cookie = await login();
     const base = { name: "X", priceCents: 1000, sortOrder: 0, active: true };
     for (const bad of [{ name: "" }, { name: "   " }, { name: "x".repeat(81) }, { priceCents: -1 }, { priceCents: 12.5 }, { priceCents: "" },
-      { priceCents: null }, { priceCents: "abc" }, { priceCents: 100_000_001 }, { sortOrder: -1 }, { sortOrder: 1.5 }, { sortOrder: 10000 }]) {
+      { priceCents: null }, { priceCents: "abc" }, { priceCents: 100_000_001 }, { sortOrder: -1 }, { sortOrder: 1.5 }, { sortOrder: 10000 },
+      { type: "autre" }, { type: "constructor" }, { type: "choice" }, { type: "choice", choices: [] }, { type: "choice", choices: ["  "] },
+      { type: "choice", choices: ["x".repeat(41)] }, { type: "choice", choices: "Blanc" }, { type: "text", maxValue: 201 },
+      { type: "text", maxValue: -1 }, { type: "quantity", maxValue: 100 }, { type: "quantity", maxValue: 1.5 }]) {
       const res = await call("POST", "/api/admin/options", { cookie, body: { ...base, ...bad } });
       assert.equal(res.status, 400, JSON.stringify(bad));
     }
@@ -344,11 +404,13 @@ describe("module des options (partagé boutique / serveur)", () => {
     { id: "1", name: "B", priceCents: 100, sortOrder: 5, active: true },
     { id: "2", name: "A", priceCents: 200, sortOrder: 5, active: true },
     { id: "3", name: "C", priceCents: 300, sortOrder: 1, active: false },
+    { id: "4", name: "Prénom", type: "text", priceCents: 500, sortOrder: 9, active: true },
   ];
-  it("trie par ordre puis par nom et ne garde que l'identifiant, le nom et le prix", () => {
-    assert.deepEqual(normalizeSelection([{ id: "1" }, "2"], available), [
-      { id: "2", name: "A", priceCents: 200 },
-      { id: "1", name: "B", priceCents: 100 },
+  it("trie par ordre puis par nom et garde l'identifiant, le nom, la valeur et le prix", () => {
+    assert.deepEqual(normalizeSelection([{ id: "1" }, "2", { id: "4", value: "Sara" }], available), [
+      { id: "2", name: "A", value: true, priceCents: 200 },
+      { id: "1", name: "B", value: true, priceCents: 100 },
+      { id: "4", name: "Prénom", value: "Sara", priceCents: 500 },
     ]);
   });
   it("refuse une option désactivée ou inconnue", () => {
@@ -356,10 +418,16 @@ describe("module des options (partagé boutique / serveur)", () => {
     assert.throws(() => normalizeSelection([{ id: "9" }], available));
     assert.throws(() => normalizeSelection([{ id: "1" }], []));
   });
-  it("affiche aussi les options des anciennes commandes", () => {
+  it("ne propose pour un bouquet que ses options", () => {
+    assert.deepEqual(optionsForProduct({ optionIds: ["4", "1"] }, available).map((o) => o.id), ["1", "4"]);
+    assert.deepEqual(optionsForProduct({}, available), []);
+  });
+  it("affiche les options des commandes, anciennes comprises", () => {
+    assert.equal(describeOption({ id: "1", name: "Ruban satin", value: true, priceCents: 15000 }), "Ruban satin");
     assert.equal(describeOption({ id: "1", name: "Ruban satin", priceCents: 15000 }), "Ruban satin");
+    assert.equal(describeOption({ id: "4", name: "Initiales", value: "AM", priceCents: 30000 }), "Initiales : AM");
+    assert.equal(describeOption({ id: "5", name: "Papillons", value: 3, priceCents: 30000 }), "Papillons × 3");
     assert.equal(describeOption({ id: "initiales", label: "Initiales", value: "AM", priceCents: 30000 }), "Initiales : AM");
-    assert.equal(describeOption({ id: "papillons", label: "Papillons artificiels", value: 3, priceCents: 30000 }), "Papillons artificiels × 3");
     assert.equal(describeOption({ id: "emballage", label: "Emballage cadeau premium", value: true, priceCents: 40000 }), "Emballage cadeau premium");
   });
 });
@@ -367,19 +435,20 @@ describe("module des options (partagé boutique / serveur)", () => {
 describe("schéma de la base", () => {
   const normalize = (sql) => sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
 
-  it("db-init.js et schema.sql créent la même table options", async () => {
+  it("db-init.js ajoute les colonnes d'options telles que schema.sql les définit", async () => {
     const schema = await readFile(path.join(root, "database/schema.sql"), "utf8");
     const block = schema.match(/CREATE TABLE IF NOT EXISTS `options`[\s\S]*?ENGINE = InnoDB/);
     assert.ok(block, "table options absente de schema.sql");
-    assert.equal(normalize(block[0]), normalize(OPTIONS_TABLE_SQL));
+    const table = normalize(block[0]);
+    for (const [name, definition, after] of OPTION_COLUMNS) {
+      assert.ok(table.includes(`${name} ${definition},`), `${name} : définition différente`);
+      assert.ok(table.indexOf(` ${after} `) < table.indexOf(` ${name} `), `${name} doit suivre ${after}`);
+    }
   });
 
-  it("db-init.js et schema.sql proposent les mêmes options d'exemple", async () => {
-    const schema = await readFile(path.join(root, "database/schema.sql"), "utf8");
-    for (const o of SAMPLE_OPTIONS) {
-      const sqlName = o.name.replace(/'/g, "''");
-      assert.match(schema, new RegExp(`'${sqlName}'(?: AS name)?, ${o.priceCents}(?: AS price_cents)?, ${o.sortOrder}`), o.name);
-    }
+  it("schema.sql crée la table des options de chaque bouquet", async () => {
+    const schema = normalize(await readFile(path.join(root, "database/schema.sql"), "utf8"));
+    assert.match(schema, /CREATE TABLE IF NOT EXISTS product_options .*PRIMARY KEY \(product_id, option_id\)/);
   });
 });
 

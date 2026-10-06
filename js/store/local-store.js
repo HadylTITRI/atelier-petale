@@ -5,7 +5,7 @@
  */
 import { CONFIG, STATUSES } from "../config.js";
 import { local, uid, makeOrderCode } from "../utils.js";
-import { normalizeSelection, optionsTotalCents, sortOptions } from "../options.js";
+import { normalizeSelection, optionsTotalCents, optionsForProduct, sortOptions } from "../options.js";
 
 /** Identifiants du mode démo uniquement (aucune sécurité réelle). Le vrai site utilise le serveur. */
 const DEMO_ADMIN = { email: "admin@demo.fr", password: "admin123" };
@@ -25,14 +25,17 @@ const SAMPLE_PRODUCTS = [
   { name: "Bouquet pastel", category: "bouquets", priceCents: 400000, description: "Roses, lisianthus et gypsophile dans des tons poudrés." },
 ];
 
-/** Mêmes options d'exemple que la base (server/db-init.js). Identifiants numériques, comme en base. */
+/** Mêmes options d'exemple que la base (database/schema.sql). Identifiants numériques, comme en base. */
 const SAMPLE_OPTIONS = [
-  { name: "Initiales sur le bouquet", priceCents: 30000, sortOrder: 10 },
-  { name: "Prénom sur un ruban", priceCents: 50000, sortOrder: 20 },
-  { name: "3 papillons artificiels", priceCents: 30000, sortOrder: 30 },
-  { name: "Ruban satin", priceCents: 15000, sortOrder: 40 },
-  { name: "Emballage cadeau premium", priceCents: 40000, sortOrder: 50 },
+  { name: "Initiales sur le bouquet", type: "text", maxValue: 3, priceCents: 30000, sortOrder: 10 },
+  { name: "Prénom sur un ruban", type: "text", maxValue: 20, priceCents: 50000, sortOrder: 20 },
+  { name: "Papillons artificiels", type: "quantity", maxValue: 12, priceCents: 10000, sortOrder: 30 },
+  { name: "Ruban satin", type: "choice", choices: ["Rose poudré", "Blanc", "Doré", "Rouge", "Noir"], priceCents: 15000, sortOrder: 40 },
+  { name: "Emballage cadeau premium", type: "toggle", priceCents: 40000, sortOrder: 50 },
 ];
+
+/** Options enregistrées par une version précédente : complétées avec les champs ajoutés depuis. */
+const withOptionDefaults = (o) => ({ type: "toggle", choices: [], maxValue: 0, ...o });
 
 function readOptions() {
   let options = local.get(KEYS.options, null);
@@ -40,7 +43,7 @@ function readOptions() {
     options = SAMPLE_OPTIONS.map((o, i) => ({ id: String(i + 1), active: true, ...o }));
     local.set(KEYS.options, options);
   }
-  return options;
+  return options.map(withOptionDefaults);
 }
 
 const nextOptionId = (options) => String(options.reduce((max, o) => Math.max(max, Number(o.id) || 0), 0) + 1);
@@ -50,10 +53,12 @@ function readProducts() {
   if (!products) {
     // Premier lancement : on installe des produits d'exemple.
     const now = new Date().toISOString();
-    products = SAMPLE_PRODUCTS.map((p) => ({ id: uid(), imageUrl: "", active: true, createdAt: now, ...p }));
+    const optionIds = readOptions().map((o) => o.id);
+    products = SAMPLE_PRODUCTS.map((p) => ({ id: uid(), imageUrl: "", active: true, createdAt: now, optionIds, ...p }));
     local.set(KEYS.products, products);
   }
-  return products;
+  // Produits d'une version précédente, où toutes les options valaient pour tous les bouquets.
+  return products.map((p) => (p.optionIds ? p : { ...p, optionIds: readOptions().map((o) => o.id) }));
 }
 
 /** La boutique ne vend que les catégories de config.js (les anciens produits démo sont masqués). */
@@ -94,13 +99,17 @@ export function createLocalStore() {
       return sortOptions(readOptions().filter((o) => includeHidden || o.active));
     },
 
-    async saveOption(option) {
+    async saveOption({ addToAllProducts, ...option }) {
       const options = readOptions();
       const index = options.findIndex((o) => o.id === option.id);
       if (index >= 0) options[index] = { ...options[index], ...option };
       else options.push({ ...option, id: nextOptionId(options) });
       local.set(KEYS.options, options);
-      return index >= 0 ? options[index] : options.at(-1);
+      const saved = index >= 0 ? options[index] : options.at(-1);
+      if (addToAllProducts) {
+        local.set(KEYS.products, readProducts().map((p) => ({ ...p, optionIds: [...p.optionIds, saved.id] })));
+      }
+      return saved;
     },
 
     async setOptionActive(id, active) {
@@ -111,6 +120,7 @@ export function createLocalStore() {
 
     async deleteOption(id) {
       local.set(KEYS.options, readOptions().filter((o) => o.id !== id));
+      local.set(KEYS.products, readProducts().map((p) => ({ ...p, optionIds: p.optionIds.filter((o) => o !== id) })));
     },
 
     async placeOrder({ items, customer, address, delivery, cardMessage = "", notes = "" }) {
@@ -121,7 +131,7 @@ export function createLocalStore() {
         const product = catalog.get(productId);
         if (!product) throw new Error("Un article de votre panier n'est plus disponible.");
         if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw new Error("Quantité invalide dans votre panier.");
-        const chosen = normalizeSelection(options, availableOptions);
+        const chosen = normalizeSelection(options, optionsForProduct(product, availableOptions));
         return {
           productId, name: product.name, priceCents: product.priceCents, qty,
           options: chosen, optionsCents: optionsTotalCents(chosen),

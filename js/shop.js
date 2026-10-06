@@ -4,7 +4,7 @@
 import { CONFIG, STATUSES } from "./config.js";
 import { store } from "./store/index.js";
 import { cart } from "./cart.js";
-import { normalizeSelection, describeOption, optionsTotalCents } from "./options.js";
+import { normalizeSelection, describeOption, optionsTotalCents, optionsForProduct } from "./options.js";
 import {
   $, $$, escapeHtml, formatPrice, formatDate, isoDay, local, toast,
   productVisual, categoryArt, statusLabel,
@@ -147,27 +147,59 @@ function changeQty(key, delta) {
    Personnalisation d'un bouquet (fenêtre : options → ajout au panier)
    ========================================================================== */
 
-let customizing = null; // bouquet en cours de personnalisation
+let customizing = null;   // bouquet en cours de personnalisation
+let customOptions = [];  // options proposées pour ce bouquet
 
-/** Une option : case à cocher avec son nom et son prix. */
+const optionPrice = (option) => {
+  if (!option.priceCents) return "Offert";
+  return option.type === "quantity" ? `+${formatPrice(option.priceCents)} / unité` : `+${formatPrice(option.priceCents)}`;
+};
+
+/** Une option : nom et prix, puis le champ adapté à son type. */
 function optionField(option) {
-  const id = `opt-${option.id}`;
+  const id = escapeHtml(`opt-${option.id}`);
+  const data = `data-option-id="${escapeHtml(option.id)}"`;
+  const name = escapeHtml(option.name);
+  let control = "";
+  let hint = "";
+
+  if (option.type === "text") {
+    control = `<input id="${id}" ${data} maxlength="${option.maxValue}" autocomplete="off" placeholder="À écrire (facultatif)">`;
+    hint = `${option.maxValue} caractères maximum. Laissez vide si vous n'en voulez pas.`;
+  } else if (option.type === "choice") {
+    control = `<select id="${id}" ${data}><option value="">Sans</option>${
+      option.choices.map((c) => `<option>${escapeHtml(c)}</option>`).join("")}</select>`;
+  } else if (option.type === "quantity") {
+    control = `<input id="${id}" ${data} type="number" inputmode="numeric" min="0" max="${option.maxValue}" step="1" value="0" class="num">`;
+    hint = `De 0 à ${option.maxValue}.`;
+  }
+
+  if (!control) {
+    // Case à cocher : le libellé et la case sur la même ligne.
+    return `
+      <div class="option">
+        <div class="option-head">
+          <label class="checkbox" for="${id}"><input type="checkbox" id="${id}" ${data}> ${name}</label>
+          <span class="price-tag num">${optionPrice(option)}</span>
+        </div>
+      </div>`;
+  }
   return `
     <div class="option">
-      <div class="option-head">
-        <label class="checkbox" for="${escapeHtml(id)}">
-          <input type="checkbox" id="${escapeHtml(id)}" data-option-id="${escapeHtml(option.id)}"> ${escapeHtml(option.name)}
-        </label>
-        <span class="price-tag num">${option.priceCents ? `+${formatPrice(option.priceCents)}` : "Offert"}</span>
-      </div>
+      <div class="option-head"><label for="${id}">${name}</label><span class="price-tag num">${optionPrice(option)}</span></div>
+      ${control}
+      ${hint ? `<span class="hint">${escapeHtml(hint)}</span>` : ""}
     </div>`;
 }
 
-/** Lit les options cochées dans la fenêtre : [{ id }]. */
+/** Lit les options remplies dans la fenêtre : [{ id, value }]. */
 function readSelection() {
-  return $$("#custom-options [data-option-id]")
-    .filter((input) => input.checked)
-    .map((input) => ({ id: input.dataset.optionId }));
+  return $$("#custom-options [data-option-id]").map((input) => {
+    const { optionId: id } = input.dataset;
+    if (input.type === "checkbox") return { id, value: input.checked };
+    if (input.type === "number") return { id, value: input.value === "" ? 0 : Number(input.value) };
+    return { id, value: input.value };
+  });
 }
 
 /** Met à jour le prix affiché ; renvoie la sélection validée, ou null si une option est invalide. */
@@ -175,7 +207,7 @@ function refreshCustomTotal() {
   const error = $("#custom-error");
   let options;
   try {
-    options = normalizeSelection(readSelection(), state.options);
+    options = normalizeSelection(readSelection(), customOptions);
     error.hidden = true;
   } catch (e) {
     error.textContent = e.message;
@@ -197,10 +229,10 @@ function openCustomize(productId) {
   $("#custom-title").textContent = product.name;
   $("#custom-desc").textContent = product.description;
   $("#custom-visual").innerHTML = productVisual(product, 56);
+  customOptions = optionsForProduct(product, state.options);
   const fieldset = $("#custom-options");
-  fieldset.hidden = state.options.length === 0;
-  fieldset.innerHTML = `<legend>Personnalisez votre bouquet</legend>${state.options.map(optionField).join("")}
-    <span class="hint">Une option demande une précision (initiales, prénom, couleur du ruban) ? Indiquez-la à l'étape livraison, dans « Précisions pour l'atelier ».</span>`;
+  fieldset.hidden = customOptions.length === 0;
+  fieldset.innerHTML = `<legend>Personnalisez votre bouquet</legend>${customOptions.map(optionField).join("")}`;
   refreshCustomTotal();
   $("#custom-dialog").showModal();
 }
@@ -215,7 +247,7 @@ function submitCustomize(event) {
   const options = refreshCustomTotal();
   if (!options || !customizing) return;
   try {
-    cart.add(customizing.id, options.map(({ id }) => ({ id })));
+    cart.add(customizing.id, options.map(({ id, value }) => ({ id, value })));
   } catch (error) {
     $("#custom-error").textContent = error.message;
     $("#custom-error").hidden = false;
@@ -270,7 +302,7 @@ function prepareCheckout() {
 function readCheckout() {
   const order = {
     items: cart.lines.map(({ productId, qty, options }) => ({
-      productId, qty, options: options.map(({ id }) => ({ id })),
+      productId, qty, options: options.map(({ id, value }) => ({ id, value })),
     })),
     customer: {}, address: {}, delivery: {},
   };
@@ -438,7 +470,7 @@ export function initShop() {
   // Fenêtre de personnalisation : prix en direct, fond grisé pour fermer.
   const custom = $("#custom-dialog");
   $("#custom-form").addEventListener("submit", submitCustomize);
-  $("#custom-form").addEventListener("change", refreshCustomTotal);
+  $("#custom-form").addEventListener("input", refreshCustomTotal);
   custom.addEventListener("click", (event) => {
     if (event.target === custom) closeCustomize();
   });

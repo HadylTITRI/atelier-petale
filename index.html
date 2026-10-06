@@ -140,6 +140,10 @@
                 <input id="pf-image" type="url" placeholder="https://…/photo.jpg">
                 <span class="hint">Sans photo, une illustration de la catégorie s'affiche.</span>
               </div>
+              <fieldset class="option-picker" id="pf-options">
+                <legend>Options proposées pour ce bouquet</legend>
+                <div id="pf-option-list"></div>
+              </fieldset>
               <label class="checkbox"><input type="checkbox" id="pf-active" checked> Visible dans la boutique</label>
               <p class="form-error" id="product-error" hidden></p>
               <div class="form-actions">
@@ -151,7 +155,7 @@
         </div>
       </div>
 
-      <!-- Options (communes à tous les bouquets) -->
+      <!-- Options (chaque bouquet choisit les siennes dans l'onglet Produits) -->
       <div id="admin-options" role="tabpanel" hidden>
         <div class="product-admin">
           <div class="product-list" id="option-list"></div>
@@ -163,11 +167,29 @@
                 <label for="of-name">Nom</label>
                 <input id="of-name" maxlength="80" placeholder="Emballage cadeau premium" required>
               </div>
+              <div class="field">
+                <label for="of-type">Ce que le client fait</label>
+                <select id="of-type">
+                  <option value="toggle">Cocher une case (ex. emballage cadeau)</option>
+                  <option value="text">Écrire un texte (ex. initiales, prénom)</option>
+                  <option value="choice">Choisir dans une liste (ex. couleur du ruban)</option>
+                  <option value="quantity">Indiquer un nombre (ex. papillons)</option>
+                </select>
+              </div>
+              <div class="field" id="of-choices-field" hidden>
+                <label for="of-choices">Choix possibles</label>
+                <textarea id="of-choices" placeholder="Rose poudré&#10;Blanc&#10;Doré"></textarea>
+                <span class="hint">Un choix par ligne (30 maximum).</span>
+              </div>
+              <div class="field" id="of-max-field" hidden>
+                <label for="of-max" id="of-max-label">Nombre de caractères maximum</label>
+                <input id="of-max" type="number" inputmode="numeric" min="1" step="1">
+              </div>
               <div class="form-row">
                 <div class="field">
                   <label for="of-price">Prix (DA)</label>
                   <input id="of-price" inputmode="decimal" placeholder="400" required>
-                  <span class="hint">0 pour une option offerte.</span>
+                  <span class="hint" id="of-price-hint">0 pour une option offerte.</span>
                 </div>
                 <div class="field">
                   <label for="of-order">Ordre d'affichage</label>
@@ -176,7 +198,8 @@
                 </div>
               </div>
               <label class="checkbox"><input type="checkbox" id="of-active" checked> Proposée dans la boutique</label>
-              <p class="hint" style="margin:0">Cette option est proposée pour tous les bouquets. Les commandes déjà passées gardent le nom et le prix du moment.</p>
+              <label class="checkbox" id="of-all-field"><input type="checkbox" id="of-all"> Ajouter à tous les bouquets</label>
+              <p class="hint" style="margin:0">Choisissez les bouquets concernés dans l'onglet Produits. Les commandes déjà passées gardent le nom, le choix du client et le prix du moment.</p>
               <p class="form-error" id="option-error" hidden></p>
               <div class="form-actions">
                 <button class="btn btn-primary" type="submit" id="of-submit">Ajouter l'option</button>

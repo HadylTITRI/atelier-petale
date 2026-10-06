@@ -20,10 +20,19 @@ const productFromRow = (row) => ({
 const optionFromRow = (row) => ({
   id: String(row.id),
   name: row.name,
+  type: row.type,
   priceCents: row.price_cents,
+  choices: row.choices == null ? [] : parseJson(row.choices),
+  maxValue: row.max_value,
   active: Boolean(row.active),
   sortOrder: row.sort_order,
 });
+
+/** Valeurs d'une option, dans l'ordre : name, type, price_cents, choices, max_value, active, sort_order. */
+const optionValues = (option) => [
+  option.name, option.type, option.priceCents, option.choices.length ? JSON.stringify(option.choices) : null,
+  option.maxValue, option.active, option.sortOrder,
+];
 
 /** `options` est un mot-clé MySQL : le nom de la table est toujours entre accents graves. */
 const OPTIONS_ORDER = "ORDER BY sort_order, name, id";
@@ -79,6 +88,66 @@ export function createMysqlRepo(pool) {
     return orderRows.map((row) => orderFromRow(row, byOrder.get(row.id) ?? []));
   }
 
+  /** Produits lus en base → produits avec la liste de leurs options (`optionIds`). */
+  async function withOptionIds(rows) {
+    if (!rows.length) return [];
+    const [links] = await pool.query(
+      "SELECT product_id, option_id FROM product_options WHERE product_id IN (?) ORDER BY option_id",
+      [rows.map((row) => row.id)],
+    );
+    const byProduct = new Map();
+    for (const link of links) {
+      if (!byProduct.has(link.product_id)) byProduct.set(link.product_id, []);
+      byProduct.get(link.product_id).push(String(link.option_id));
+    }
+    return rows.map((row) => ({ ...productFromRow(row), optionIds: byProduct.get(row.id) ?? [] }));
+  }
+
+  /** Enregistre un produit et remplace ses options, dans une transaction. Renvoie son identifiant, ou null. */
+  async function saveProduct(id, product) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const values = [product.name, product.category, product.priceCents, product.description, product.imageUrl, product.active];
+      if (id == null) {
+        const [result] = await connection.query(
+          "INSERT INTO products (name, category, price_cents, description, image_url, active) VALUES (?, ?, ?, ?, ?, ?)",
+          values,
+        );
+        id = result.insertId;
+      } else {
+        const [[existing]] = await connection.query("SELECT id FROM products WHERE id = ? FOR UPDATE", [Number(id)]);
+        if (!existing) {
+          await connection.rollback();
+          return null;
+        }
+        await connection.query(
+          "UPDATE products SET name = ?, category = ?, price_cents = ?, description = ?, image_url = ?, active = ? WHERE id = ?",
+          [...values, Number(id)],
+        );
+        await connection.query("DELETE FROM product_options WHERE product_id = ?", [Number(id)]);
+      }
+      if (product.optionIds.length) {
+        await connection.query(
+          "INSERT INTO product_options (product_id, option_id) VALUES ?",
+          [product.optionIds.map((optionId) => [Number(id), Number(optionId)])],
+        );
+      }
+      await connection.commit();
+      return Number(id);
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async function getProduct(id) {
+    const [rows] = await pool.query("SELECT * FROM products WHERE id = ?", [Number(id)]);
+    return (await withOptionIds(rows))[0] ?? null;
+  }
+
   return {
     async ping() {
       await pool.query("SELECT 1");
@@ -89,34 +158,25 @@ export function createMysqlRepo(pool) {
     async listProducts({ includeHidden = false } = {}) {
       const where = includeHidden ? "" : "WHERE active = TRUE";
       const [rows] = await pool.query(`SELECT * FROM products ${where} ORDER BY category, name`);
-      return rows.map(productFromRow);
+      return withOptionIds(rows);
     },
 
     async getProductsByIds(ids) {
       const numeric = ids.filter((id) => /^\d+$/.test(id)).map(Number);
       if (!numeric.length) return [];
       const [rows] = await pool.query("SELECT * FROM products WHERE id IN (?)", [numeric]);
-      return rows.map(productFromRow);
+      return withOptionIds(rows);
     },
 
+    /** `product.optionIds` doit ne contenir que des options existantes (vérifié par le serveur). */
     async createProduct(product) {
-      const [result] = await pool.query(
-        "INSERT INTO products (name, category, price_cents, description, image_url, active) VALUES (?, ?, ?, ?, ?, ?)",
-        [product.name, product.category, product.priceCents, product.description, product.imageUrl, product.active],
-      );
-      const [[row]] = await pool.query("SELECT * FROM products WHERE id = ?", [result.insertId]);
-      return productFromRow(row);
+      return getProduct(await saveProduct(null, product));
     },
 
     /** Renvoie le produit modifié, ou null s'il n'existe pas. */
     async updateProduct(id, product) {
-      const [result] = await pool.query(
-        "UPDATE products SET name = ?, category = ?, price_cents = ?, description = ?, image_url = ?, active = ? WHERE id = ?",
-        [product.name, product.category, product.priceCents, product.description, product.imageUrl, product.active, Number(id)],
-      );
-      if (!result.affectedRows) return null;
-      const [[row]] = await pool.query("SELECT * FROM products WHERE id = ?", [Number(id)]);
-      return productFromRow(row);
+      const saved = await saveProduct(id, product);
+      return saved == null ? null : getProduct(saved);
     },
 
     async deleteProduct(id) {
@@ -124,7 +184,7 @@ export function createMysqlRepo(pool) {
       return result.affectedRows > 0;
     },
 
-    /* ---------- options (communes à tous les bouquets) ---------- */
+    /* ---------- options (chaque bouquet propose les siennes) ---------- */
 
     async listOptions({ includeHidden = false } = {}) {
       const where = includeHidden ? "" : "WHERE active = TRUE";
@@ -140,13 +200,30 @@ export function createMysqlRepo(pool) {
       return rows.map(optionFromRow);
     },
 
+    /** Avec `addToAllProducts`, l'option est aussitôt proposée pour tous les bouquets existants. */
     async createOption(option) {
-      const [result] = await pool.query(
-        "INSERT INTO `options` (name, price_cents, active, sort_order) VALUES (?, ?, ?, ?)",
-        [option.name, option.priceCents, option.active, option.sortOrder],
-      );
-      const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [result.insertId]);
-      return optionFromRow(row);
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [result] = await connection.query(
+          "INSERT INTO `options` (name, type, price_cents, choices, max_value, active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          optionValues(option),
+        );
+        if (option.addToAllProducts) {
+          await connection.query(
+            "INSERT INTO product_options (product_id, option_id) SELECT id, ? FROM products",
+            [result.insertId],
+          );
+        }
+        await connection.commit();
+        const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [result.insertId]);
+        return optionFromRow(row);
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
     },
 
     /** Renvoie l'option modifiée, ou null si elle n'existe pas. */
@@ -154,8 +231,8 @@ export function createMysqlRepo(pool) {
       const [[existing]] = await pool.query("SELECT id FROM `options` WHERE id = ?", [Number(id)]);
       if (!existing) return null;
       await pool.query(
-        "UPDATE `options` SET name = ?, price_cents = ?, active = ?, sort_order = ? WHERE id = ?",
-        [option.name, option.priceCents, option.active, option.sortOrder, Number(id)],
+        "UPDATE `options` SET name = ?, type = ?, price_cents = ?, choices = ?, max_value = ?, active = ?, sort_order = ? WHERE id = ?",
+        [...optionValues(option), Number(id)],
       );
       const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [Number(id)]);
       return optionFromRow(row);
@@ -170,7 +247,7 @@ export function createMysqlRepo(pool) {
       return optionFromRow(row);
     },
 
-    /** Les commandes déjà passées gardent le nom et le prix de l'option (copiés à l'achat). */
+    /** Retire aussi l'option des bouquets. Les commandes déjà passées gardent son nom et son prix (copiés à l'achat). */
     async deleteOption(id) {
       const [result] = await pool.query("DELETE FROM `options` WHERE id = ?", [Number(id)]);
       return result.affectedRows > 0;
