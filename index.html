@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nour Flower — Bouquets de fleurs personnalisés</title>
-  <meta name="description" content="Bouquets de fleurs frais, personnalisables (initiales, papillons, ruban…) et livrés à domicile.">
+  <meta name="description" content="Bouquets de fleurs frais, personnalisables (emballage cadeau, ruban…) et livrés à domicile.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Figtree:wght@400;500;600;700&display=swap">
@@ -49,7 +49,7 @@
       <div class="page-intro">
         <span class="eyebrow">Fleuriste · Livraison à domicile</span>
         <h2>Des bouquets à votre image</h2>
-        <p>Choisissez un bouquet, ajoutez vos options (initiales, prénom, papillons, ruban…), indiquez l'adresse de livraison et validez. Nous préparons votre commande et vous suivez son avancement dans « Mes commandes ».</p>
+        <p>Choisissez un bouquet, ajoutez vos options (emballage cadeau, ruban…), indiquez l'adresse de livraison et validez. Nous préparons votre commande et vous suivez son avancement dans « Mes commandes ».</p>
       </div>
       <div class="product-grid" id="product-grid" aria-live="polite"></div>
     </section>
@@ -94,6 +94,7 @@
         <div class="subtabs" role="tablist" aria-label="Administration">
           <button type="button" role="tab" aria-selected="true" data-admin-tab="orders">Commandes</button>
           <button type="button" role="tab" aria-selected="false" data-admin-tab="products">Produits</button>
+          <button type="button" role="tab" aria-selected="false" data-admin-tab="options">Options</button>
         </div>
         <button class="btn" type="button" data-action="logout">Se déconnecter</button>
       </div>
@@ -144,6 +145,42 @@
               <div class="form-actions">
                 <button class="btn btn-primary" type="submit" id="pf-submit">Ajouter le produit</button>
                 <button class="btn" type="button" id="pf-cancel" hidden>Annuler</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- Options (communes à tous les bouquets) -->
+      <div id="admin-options" role="tabpanel" hidden>
+        <div class="product-admin">
+          <div class="product-list" id="option-list"></div>
+          <div class="panel">
+            <h3 id="option-form-title">Ajouter une option</h3>
+            <form class="form" id="option-form" novalidate>
+              <input type="hidden" id="of-id">
+              <div class="field">
+                <label for="of-name">Nom</label>
+                <input id="of-name" maxlength="80" placeholder="Emballage cadeau premium" required>
+              </div>
+              <div class="form-row">
+                <div class="field">
+                  <label for="of-price">Prix (DA)</label>
+                  <input id="of-price" inputmode="decimal" placeholder="400" required>
+                  <span class="hint">0 pour une option offerte.</span>
+                </div>
+                <div class="field">
+                  <label for="of-order">Ordre d'affichage</label>
+                  <input id="of-order" type="number" inputmode="numeric" min="0" max="9999" step="1" placeholder="10">
+                  <span class="hint">Les plus petits nombres en premier.</span>
+                </div>
+              </div>
+              <label class="checkbox"><input type="checkbox" id="of-active" checked> Proposée dans la boutique</label>
+              <p class="hint" style="margin:0">Cette option est proposée pour tous les bouquets. Les commandes déjà passées gardent le nom et le prix du moment.</p>
+              <p class="form-error" id="option-error" hidden></p>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit" id="of-submit">Ajouter l'option</button>
+                <button class="btn" type="button" id="of-cancel" hidden>Annuler</button>
               </div>
             </form>
           </div>

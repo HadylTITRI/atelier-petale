@@ -185,7 +185,7 @@ main.container { padding-block: 28px 64px; min-height: 70vh; }
 }
 .field textarea { min-height: 70px; resize: vertical; }
 .field [aria-invalid="true"] { border-color: var(--st-nouvelle); }
-.field .hint { color: var(--muted); font-size: 12px; }
+.field .hint, .form > .hint, fieldset > .hint { color: var(--muted); font-size: 12px; }
 .checkbox { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-row.zip-city { grid-template-columns: 110px 1fr; }
@@ -401,6 +401,8 @@ main.container { padding-block: 28px 64px; min-height: 70vh; }
 .product-row.hidden-product { opacity: 0.55; }
 .product-row .thumb { width: 48px; height: 48px; }
 .product-row .actions { display: flex; gap: 6px; }
+/* Options : même liste que les produits, sans vignette. */
+.product-row.option-row { grid-template-columns: 1fr auto; }
 
 /* 8. Utilitaires / responsive -------------------------------------------- */
 @media (max-width: 860px) {
@@ -415,6 +417,7 @@ main.container { padding-block: 28px 64px; min-height: 70vh; }
   .form-row { grid-template-columns: 1fr; }
   .product-row { grid-template-columns: 48px 1fr; }
   .product-row .actions { grid-column: 1 / -1; }
+  .product-row.option-row { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

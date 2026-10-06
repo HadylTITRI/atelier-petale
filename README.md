@@ -2,8 +2,8 @@
 
 Boutique en ligne de bouquets de fleurs personnalisables, avec livraison à domicile en Algérie (prix en dinars, paiement à la livraison).
 
-- **Clients** : catalogue de bouquets, personnalisation (initiales, prénom, papillons, ruban, emballage cadeau), panier, formulaire de livraison, suivi de la commande avec son numéro.
-- **Administration** (après connexion) : commandes reçues, changement de statut, gestion des bouquets.
+- **Clients** : catalogue de bouquets, options à cocher (emballage cadeau, ruban…), panier, formulaire de livraison, suivi de la commande avec son numéro.
+- **Administration** (après connexion) : commandes reçues, changement de statut, gestion des bouquets et des options.
 
 Site : HTML, CSS et JavaScript (modules ES), sans framework. Serveur : **Node.js**, une seule dépendance (`mysql2`). Base de données : **MySQL**.
 
@@ -14,8 +14,8 @@ atelier-petale/
 ├── index.html               L'application (toutes les pages)
 ├── css/style.css            Styles
 ├── js/                      Le site (navigateur)
-│   ├── config.js            ← Réglages : nom, monnaie, livraison, options et prix des options
-│   ├── options.js           Options de personnalisation : validation et calcul des prix
+│   ├── config.js            ← Réglages : nom, monnaie, livraison, créneaux
+│   ├── options.js           Options des bouquets : vérification et calcul des prix (boutique et serveur)
 │   ├── app.js, shop.js, admin.js, cart.js, utils.js
 │   └── store/
 │       ├── index.js         Choisit la source de données selon config.js
@@ -27,14 +27,14 @@ atelier-petale/
 │   ├── validation.js        Vérification des commandes, prix recalculés côté serveur
 │   ├── repo-mysql.js        Toutes les requêtes SQL
 │   ├── auth.js, db.js, rate-limit.js, util.js
-│   ├── db-init.js           npm run db:init : crée les tables
+│   ├── db-init.js           npm run db:init : crée les tables (et celles qui manquent sur une base existante)
 │   └── create-admin.js      npm run admin:create : crée le compte administrateur
 ├── database/schema.sql      Tables MySQL
 ├── test/                    Tests du serveur (npm test)
 └── .env.example             Modèle de configuration
 ```
 
-Le navigateur ne parle jamais à MySQL : il appelle le serveur, qui vérifie tout (champs, quantités, options) et **recalcule les prix lui-même**. Seuls `index.html`, `css/` et `js/` sont servis au public.
+Le navigateur ne parle jamais à MySQL : il appelle le serveur, qui vérifie tout (champs, quantités, options) et **recalcule les prix lui-même** à partir de la base. Seuls `index.html`, `css/` et `js/` sont servis au public.
 
 ## 1. Tester sur votre PC
 
@@ -95,7 +95,7 @@ Offres gratuites vérifiées en octobre 2026, sans carte bancaire ; elles peuven
 Créez un moniteur gratuit sur [UptimeRobot](https://uptimerobot.com) qui visite `https://votre-service.onrender.com/healthz?db=1` toutes les 5 minutes. Le serveur reste éveillé et la base reste active. Le plan gratuit de Render (750 heures par mois) couvre un service allumé en permanence.
 
 ### Avant d'ouvrir au public
-- Remplacez les bouquets d'exemple depuis l'espace admin, et réglez les prix des options et les frais de livraison dans `js/config.js` (en centimes de dinar : 600 DA = `60000`).
+- Remplacez les bouquets et les options d'exemple depuis l'espace admin, et réglez les frais de livraison dans `js/config.js` (en centimes de dinar : 600 DA = `60000`).
 - Vérifiez la réglementation algérienne applicable à la vente en ligne (commerce électronique, loi 18-05) et à la protection des données personnelles (loi 18-07) : mentions légales, conditions de vente, politique de confidentialité. Vous collectez des noms, téléphones et adresses.
 - Sauvegardez régulièrement la base (export depuis Aiven ou `mysqldump`).
 
@@ -106,9 +106,26 @@ Créez un moniteur gratuit sur [UptimeRobot](https://uptimerobot.com) qui visite
 - Limitation des essais (connexion, commandes, suivi), protection contre les requêtes venues d'un autre site, en-têtes de sécurité (CSP).
 - Le suivi par numéro de commande n'affiche ni téléphone ni adresse.
 
+## Options des bouquets
+
+Les options (emballage cadeau, ruban, vase…) sont **communes à tous les bouquets** et se gèrent dans l'espace admin, onglet **Options** : nom, prix en DA (0 pour une option offerte), ordre d'affichage (les plus petits nombres en premier), proposée ou non dans la boutique. Elles sont enregistrées dans la table `options`.
+
+- Le client coche les options qu'il veut ; s'il faut une précision (initiales, prénom, couleur), il l'écrit dans « Précisions pour l'atelier ».
+- À la commande, le serveur relit chaque option en base, **recalcule son prix** et refuse une option inconnue ou désactivée. Le nom et le prix de chaque option sont copiés dans la commande (`order_items.options`) : modifier ou supprimer une option ensuite ne change pas les commandes passées.
+- **Désactiver** une option la retire de la boutique tout en la gardant pour plus tard ; **supprimer** l'efface définitivement.
+
+**Base déjà en service ?** Relancez simplement l'initialisation, sans risque pour vos données :
+```
+node --env-file=.env server/db-init.js
+```
+Elle crée la table `options` si elle manque et y met les cinq options d'exemple si elle est vide (comme pour les bouquets : une table vidée est à nouveau remplie à la prochaine initialisation). Les anciennes options écrites dans `js/config.js` ne sont plus utilisées ; les commandes passées avant restent lisibles.
+
+API : `GET /api/options` (public, options actives) ; avec connexion admin : `GET` et `POST /api/admin/options`, `PUT` et `DELETE /api/admin/options/:id`, `PATCH /api/admin/options/:id/active` avec `{ "active": true | false }`.
+
 ## Personnaliser
 
-- **Nom, monnaie, livraison, créneaux, options et leurs prix** : `js/config.js`. Les options sont de quatre types : `text` (initiales, prénom), `quantity` (papillons), `choice` (couleur du ruban), `toggle` (case à cocher). Le serveur utilise le même fichier : un changement s'applique partout après redémarrage.
+- **Nom, monnaie, livraison, créneaux** : `js/config.js`. Le serveur utilise le même fichier : un changement s'applique partout après redémarrage.
+- **Options et leurs prix** : espace admin, onglet Options (voir plus haut).
 - **Couleurs et polices** : variables en haut de `css/style.css`.
 - **Photos des bouquets** : collez le lien d'une image dans le formulaire produit.
 
@@ -117,7 +134,7 @@ Créez un moniteur gratuit sur [UptimeRobot](https://uptimerobot.com) qui visite
 ```
 npm test
 ```
-Teste le serveur (prix, options, refus des commandes invalides, accès admin, fichiers protégés, limitation des essais) avec une base en mémoire, sans MySQL.
+Teste le serveur (prix, options recalculées depuis la base, refus des options inconnues ou désactivées, gestion des options et des produits, accès admin, fichiers protégés, limitation des essais) avec une base en mémoire, sans MySQL. Vérifie aussi que `database/schema.sql` et `server/db-init.js` décrivent la même table `options`.
 
 ## Pistes d'évolution
 

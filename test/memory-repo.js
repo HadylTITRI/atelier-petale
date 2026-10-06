@@ -2,16 +2,24 @@
  * Version en mémoire de l'accès aux données, pour tester le serveur sans MySQL.
  * Elle respecte exactement la même interface que server/repo-mysql.js.
  */
-export function createMemoryRepo({ products = [], admins = [] } = {}) {
+export function createMemoryRepo({ products = [], options = [], admins = [] } = {}) {
   let nextProductId = 1;
+  let nextOptionId = 1;
   let nextOrderId = 1;
-  const state = { products: [], orders: [], admins: [...admins], changes: 0 };
+  const state = { products: [], options: [], orders: [], admins: [...admins], changes: 0 };
 
   const seed = (p) => ({
     id: String(nextProductId++), name: p.name, category: p.category ?? "bouquets", priceCents: p.priceCents,
     description: p.description ?? "", imageUrl: p.imageUrl ?? "", active: p.active ?? true, createdAt: new Date().toISOString(),
   });
   state.products = products.map(seed);
+
+  const seedOption = (o) => ({
+    id: String(nextOptionId++), name: o.name, priceCents: o.priceCents, active: o.active ?? true, sortOrder: o.sortOrder ?? 0,
+  });
+  state.options = options.map(seedOption);
+  // Même tri que repo-mysql.js : ORDER BY sort_order, name, id
+  const byDisplayOrder = (a, b) => a.sortOrder - b.sortOrder || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || Number(a.id) - Number(b.id);
 
   return {
     state,
@@ -40,12 +48,41 @@ export function createMemoryRepo({ products = [], admins = [] } = {}) {
       return state.products.length < before;
     },
 
+    async listOptions({ includeHidden = false } = {}) {
+      return state.options.filter((o) => includeHidden || o.active).sort(byDisplayOrder).map((o) => ({ ...o }));
+    },
+    async getOptionsByIds(ids) {
+      return state.options.filter((o) => ids.includes(o.id)).map((o) => ({ ...o }));
+    },
+    async createOption(option) {
+      const created = seedOption(option);
+      state.options.push(created);
+      return { ...created };
+    },
+    async updateOption(id, option) {
+      const index = state.options.findIndex((o) => o.id === id);
+      if (index < 0) return null;
+      state.options[index] = { ...state.options[index], ...option };
+      return { ...state.options[index] };
+    },
+    async setOptionActive(id, active) {
+      const option = state.options.find((o) => o.id === id);
+      if (!option) return null;
+      option.active = active;
+      return { ...option };
+    },
+    async deleteOption(id) {
+      const before = state.options.length;
+      state.options = state.options.filter((o) => o.id !== id);
+      return state.options.length < before;
+    },
+
     async createOrder(order, makeCode) {
       let code;
       do code = makeCode(); while (state.orders.some((o) => o.code === code));
       state.orders.push({
         id: String(nextOrderId++), code, status: "nouvelle", createdAt: new Date().toISOString(),
-        items: order.items.map((i) => ({ ...i })), subtotalCents: order.subtotalCents,
+        items: structuredClone(order.items), subtotalCents: order.subtotalCents,
         deliveryCents: order.deliveryCents, totalCents: order.totalCents,
         customer: { ...order.customer }, address: { ...order.address }, delivery: { ...order.delivery },
         cardMessage: order.cardMessage, notes: order.notes,

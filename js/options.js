@@ -1,73 +1,56 @@
 /**
- * Options de personnalisation d'un bouquet (initiales, papillons, ruban…).
- * Les options sont définies dans config.js ; ce module les valide et calcule leur prix.
+ * Options des bouquets (emballage cadeau, ruban…), communes à tous les produits.
+ * Elles sont gérées par l'administrateur et chargées depuis le serveur :
+ *   { id: "3", name: "Emballage cadeau premium", priceCents: 40000, active: true, sortOrder: 50 }
  *
- * Une « sélection » brute est une liste [{ id, value }] telle que remplie par le client.
- * `normalizeSelection` la transforme en lignes sûres, avec libellé et prix recalculés :
- * c'est ce résultat qui est enregistré dans la commande, jamais le prix envoyé par le navigateur.
+ * Une « sélection » brute est la liste des options cochées par le client : [{ id }].
+ * `normalizeSelection` la vérifie contre la liste des options disponibles et la transforme
+ * en lignes sûres { id, name, priceCents } : c'est ce résultat qui est enregistré dans la
+ * commande, jamais le prix envoyé par le navigateur. Le serveur utilise ce même module
+ * avec les options lues en base.
  */
-import { CONFIG } from "./config.js";
 
-const definitions = () => CONFIG.bouquetOptions ?? [];
+export const MAX_OPTIONS_PER_ITEM = 30;
 
-/** Nettoie un texte libre : espaces normalisés, caractères de contrôle retirés. */
-const cleanText = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+export const UNAVAILABLE_OPTION = "Une option choisie n'est plus disponible. Retirez-la et réessayez.";
 
-/**
- * Valide une sélection et la renvoie dans l'ordre de config.js.
- * Lève une erreur si une option est inconnue ou invalide.
- * Une option vide (texte vide, quantité 0, case décochée) est simplement ignorée.
- */
-export function normalizeSelection(raw = []) {
-  const byId = new Map(definitions().map((def) => [def.id, def]));
-  const seen = new Map();
-
-  for (const entry of Array.isArray(raw) ? raw : []) {
-    const def = byId.get(entry?.id);
-    if (!def) throw new Error("Une option choisie n'existe plus.");
-    seen.set(def.id, entry.value);
-  }
-
-  const result = [];
-  for (const def of definitions()) {
-    if (!seen.has(def.id)) continue;
-    const input = seen.get(def.id);
-    let value;
-    let priceCents;
-
-    if (def.type === "text") {
-      value = cleanText(input);
-      if (def.uppercase) value = value.toLocaleUpperCase("fr-FR");
-      if (!value) continue;
-      if (value.length > def.maxLength) throw new Error(`« ${def.label} » : ${def.maxLength} caractères maximum.`);
-      priceCents = def.priceCents;
-    } else if (def.type === "quantity") {
-      const qty = Number(input);
-      if (!qty) continue;
-      if (!Number.isInteger(qty) || qty < 0 || qty > def.max) throw new Error(`« ${def.label} » : de 1 à ${def.max}.`);
-      value = qty;
-      priceCents = def.unitPriceCents * qty;
-    } else if (def.type === "choice") {
-      value = cleanText(input);
-      if (!value) continue;
-      if (!def.choices.includes(value)) throw new Error(`« ${def.label} » : choix invalide.`);
-      priceCents = def.priceCents;
-    } else if (def.type === "toggle") {
-      if (!input) continue;
-      value = true;
-      priceCents = def.priceCents;
-    } else {
-      continue;
-    }
-
-    result.push({ id: def.id, label: def.label, value, priceCents });
-  }
-  return result;
+/** Ordre d'affichage : `sortOrder` croissant, puis nom, puis identifiant. */
+export function sortOptions(options) {
+  return [...options].sort((a, b) =>
+    (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+    || String(a.name).localeCompare(String(b.name), "fr")
+    || Number(a.id) - Number(b.id));
 }
 
-/** Texte lisible d'une option choisie : « Initiales : AM », « Papillons artificiels × 3 », « Emballage cadeau premium ». */
+/**
+ * Vérifie une sélection et la renvoie dans l'ordre d'affichage.
+ * `available` = options proposées (seules les actives sont acceptées).
+ * Lève une erreur si une option est inconnue ou désactivée. Une option choisie deux fois compte une fois.
+ */
+export function normalizeSelection(raw = [], available = []) {
+  const entries = Array.isArray(raw) ? raw : [];
+  if (entries.length > MAX_OPTIONS_PER_ITEM) throw new Error("Trop d'options choisies.");
+
+  const byId = new Map(available.filter((o) => o.active !== false).map((o) => [String(o.id), o]));
+  const chosen = new Set();
+  for (const entry of entries) {
+    const id = String(entry !== null && typeof entry === "object" ? entry.id ?? "" : entry ?? "");
+    if (!byId.has(id)) throw new Error(UNAVAILABLE_OPTION);
+    chosen.add(id);
+  }
+
+  return sortOptions([...chosen].map((id) => byId.get(id)))
+    .map((o) => ({ id: String(o.id), name: o.name, priceCents: o.priceCents }));
+}
+
+/**
+ * Texte lisible d'une option enregistrée dans une commande.
+ * Les commandes passées avant la gestion des options par l'admin utilisaient
+ * { label, value } (« Initiales : AM », « Papillons artificiels × 3 ») : elles restent lisibles.
+ */
 export function describeOption(option) {
-  if (option.value === true) return option.label;
+  if (option.name) return option.name;
+  if (option.value === true || option.value === undefined) return option.label ?? "";
   if (typeof option.value === "number") return `${option.label} × ${option.value}`;
   return `${option.label} : ${option.value}`;
 }
@@ -79,5 +62,5 @@ export const lineUnitCents = (line) => line.priceCents + (line.optionsCents ?? 0
 
 /** Identifiant stable d'une configuration : mêmes options = même ligne de panier. */
 export function configKey(productId, options = []) {
-  return [productId, ...options.map((o) => `${o.id}=${o.value}`)].join("|");
+  return [productId, ...options.map((o) => o.id)].join("|");
 }

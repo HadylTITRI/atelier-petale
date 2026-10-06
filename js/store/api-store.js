@@ -5,7 +5,8 @@
  *  - le catalogue et le passage de commande sont publics ;
  *  - le suivi se fait avec le numéro de commande ;
  *  - tout ce qui touche aux commandes et aux produits côté admin passe par une
- *    session (cookie HttpOnly) obtenue en se connectant.
+ *    session (cookie HttpOnly) obtenue en se connectant ;
+ *  - les options actives sont publiques, leur gestion est réservée à l'admin.
  */
 
 const POLL_MS = 15_000;
@@ -46,6 +47,25 @@ export function createApiStore() {
 
     async deleteProduct(id) {
       await request("DELETE", `/api/admin/products/${encodeURIComponent(id)}`);
+    },
+
+    /** Options des bouquets : actives seulement pour la boutique, toutes pour l'admin. */
+    async listOptions({ includeHidden = false } = {}) {
+      return request("GET", includeHidden ? "/api/admin/options" : "/api/options");
+    },
+
+    async saveOption(option) {
+      return option.id
+        ? request("PUT", `/api/admin/options/${encodeURIComponent(option.id)}`, option)
+        : request("POST", "/api/admin/options", option);
+    },
+
+    async setOptionActive(id, active) {
+      return request("PATCH", `/api/admin/options/${encodeURIComponent(id)}/active`, { active });
+    },
+
+    async deleteOption(id) {
+      await request("DELETE", `/api/admin/options/${encodeURIComponent(id)}`);
     },
 
     async placeOrder(order) {

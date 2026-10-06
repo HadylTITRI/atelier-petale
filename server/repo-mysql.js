@@ -17,6 +17,17 @@ const productFromRow = (row) => ({
   createdAt: row.created_at,
 });
 
+const optionFromRow = (row) => ({
+  id: String(row.id),
+  name: row.name,
+  priceCents: row.price_cents,
+  active: Boolean(row.active),
+  sortOrder: row.sort_order,
+});
+
+/** `options` est un mot-clé MySQL : le nom de la table est toujours entre accents graves. */
+const OPTIONS_ORDER = "ORDER BY sort_order, name, id";
+
 const parseJson = (value) => {
   if (value == null) return [];
   if (typeof value !== "string") return value; // MySQL renvoie déjà un objet pour une colonne JSON
@@ -110,6 +121,58 @@ export function createMysqlRepo(pool) {
 
     async deleteProduct(id) {
       const [result] = await pool.query("DELETE FROM products WHERE id = ?", [Number(id)]);
+      return result.affectedRows > 0;
+    },
+
+    /* ---------- options (communes à tous les bouquets) ---------- */
+
+    async listOptions({ includeHidden = false } = {}) {
+      const where = includeHidden ? "" : "WHERE active = TRUE";
+      const [rows] = await pool.query(`SELECT * FROM \`options\` ${where} ${OPTIONS_ORDER}`);
+      return rows.map(optionFromRow);
+    },
+
+    /** Options demandées, actives ou non (le serveur refuse ensuite celles qui sont désactivées). */
+    async getOptionsByIds(ids) {
+      const numeric = ids.filter((id) => /^\d+$/.test(id)).map(Number);
+      if (!numeric.length) return [];
+      const [rows] = await pool.query("SELECT * FROM `options` WHERE id IN (?)", [numeric]);
+      return rows.map(optionFromRow);
+    },
+
+    async createOption(option) {
+      const [result] = await pool.query(
+        "INSERT INTO `options` (name, price_cents, active, sort_order) VALUES (?, ?, ?, ?)",
+        [option.name, option.priceCents, option.active, option.sortOrder],
+      );
+      const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [result.insertId]);
+      return optionFromRow(row);
+    },
+
+    /** Renvoie l'option modifiée, ou null si elle n'existe pas. */
+    async updateOption(id, option) {
+      const [[existing]] = await pool.query("SELECT id FROM `options` WHERE id = ?", [Number(id)]);
+      if (!existing) return null;
+      await pool.query(
+        "UPDATE `options` SET name = ?, price_cents = ?, active = ?, sort_order = ? WHERE id = ?",
+        [option.name, option.priceCents, option.active, option.sortOrder, Number(id)],
+      );
+      const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [Number(id)]);
+      return optionFromRow(row);
+    },
+
+    /** Active ou désactive ; renvoie l'option, ou null si elle n'existe pas. */
+    async setOptionActive(id, active) {
+      const [[existing]] = await pool.query("SELECT id FROM `options` WHERE id = ?", [Number(id)]);
+      if (!existing) return null;
+      await pool.query("UPDATE `options` SET active = ? WHERE id = ?", [active, Number(id)]);
+      const [[row]] = await pool.query("SELECT * FROM `options` WHERE id = ?", [Number(id)]);
+      return optionFromRow(row);
+    },
+
+    /** Les commandes déjà passées gardent le nom et le prix de l'option (copiés à l'achat). */
+    async deleteOption(id) {
+      const [result] = await pool.query("DELETE FROM `options` WHERE id = ?", [Number(id)]);
       return result.affectedRows > 0;
     },
 

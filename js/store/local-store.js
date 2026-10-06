@@ -5,13 +5,14 @@
  */
 import { CONFIG, STATUSES } from "../config.js";
 import { local, uid, makeOrderCode } from "../utils.js";
-import { normalizeSelection, optionsTotalCents } from "../options.js";
+import { normalizeSelection, optionsTotalCents, sortOptions } from "../options.js";
 
 /** Identifiants du mode démo uniquement (aucune sécurité réelle). Le vrai site utilise le serveur. */
 const DEMO_ADMIN = { email: "admin@demo.fr", password: "admin123" };
 
 const KEYS = {
   products: "ap_demo_products",
+  options: "ap_demo_options",
   orders: "ap_demo_orders",
   session: "ap_demo_admin",
 };
@@ -23,6 +24,26 @@ const SAMPLE_PRODUCTS = [
   { name: "Bouquet de tulipes", category: "bouquets", priceCents: 320000, description: "Quinze tulipes assorties, papier kraft et ruban." },
   { name: "Bouquet pastel", category: "bouquets", priceCents: 400000, description: "Roses, lisianthus et gypsophile dans des tons poudrés." },
 ];
+
+/** Mêmes options d'exemple que la base (server/db-init.js). Identifiants numériques, comme en base. */
+const SAMPLE_OPTIONS = [
+  { name: "Initiales sur le bouquet", priceCents: 30000, sortOrder: 10 },
+  { name: "Prénom sur un ruban", priceCents: 50000, sortOrder: 20 },
+  { name: "3 papillons artificiels", priceCents: 30000, sortOrder: 30 },
+  { name: "Ruban satin", priceCents: 15000, sortOrder: 40 },
+  { name: "Emballage cadeau premium", priceCents: 40000, sortOrder: 50 },
+];
+
+function readOptions() {
+  let options = local.get(KEYS.options, null);
+  if (!options) {
+    options = SAMPLE_OPTIONS.map((o, i) => ({ id: String(i + 1), active: true, ...o }));
+    local.set(KEYS.options, options);
+  }
+  return options;
+}
+
+const nextOptionId = (options) => String(options.reduce((max, o) => Math.max(max, Number(o.id) || 0), 0) + 1);
 
 function readProducts() {
   let products = local.get(KEYS.products, null);
@@ -69,14 +90,38 @@ export function createLocalStore() {
       local.set(KEYS.products, readProducts().filter((p) => p.id !== id));
     },
 
+    async listOptions({ includeHidden = false } = {}) {
+      return sortOptions(readOptions().filter((o) => includeHidden || o.active));
+    },
+
+    async saveOption(option) {
+      const options = readOptions();
+      const index = options.findIndex((o) => o.id === option.id);
+      if (index >= 0) options[index] = { ...options[index], ...option };
+      else options.push({ ...option, id: nextOptionId(options) });
+      local.set(KEYS.options, options);
+      return index >= 0 ? options[index] : options.at(-1);
+    },
+
+    async setOptionActive(id, active) {
+      const options = readOptions().map((o) => (o.id === id ? { ...o, active } : o));
+      local.set(KEYS.options, options);
+      return options.find((o) => o.id === id);
+    },
+
+    async deleteOption(id) {
+      local.set(KEYS.options, readOptions().filter((o) => o.id !== id));
+    },
+
     async placeOrder({ items, customer, address, delivery, cardMessage = "", notes = "" }) {
       // Prix du bouquet et prix des options sont recalculés ici : on ne fait pas confiance au panier.
       const catalog = new Map(readProducts().filter((p) => sellable(p) && p.active).map((p) => [p.id, p]));
+      const availableOptions = readOptions();
       const lines = items.map(({ productId, qty, options = [] }) => {
         const product = catalog.get(productId);
         if (!product) throw new Error("Un article de votre panier n'est plus disponible.");
         if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw new Error("Quantité invalide dans votre panier.");
-        const chosen = normalizeSelection(options);
+        const chosen = normalizeSelection(options, availableOptions);
         return {
           productId, name: product.name, priceCents: product.priceCents, qty,
           options: chosen, optionsCents: optionsTotalCents(chosen),

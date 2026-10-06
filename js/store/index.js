@@ -6,6 +6,10 @@
  *   listProducts({ includeHidden })   → Produit[]
  *   saveProduct(produit)              → Produit
  *   deleteProduct(id)
+ *   listOptions({ includeHidden })    → Option[] (actives seulement, sauf includeHidden)
+ *   saveOption(option)                → Option
+ *   setOptionActive(id, actif)        → Option
+ *   deleteOption(id)
  *   placeOrder(commande)              → { code }
  *   getOrdersByCodes(codes)           → Commande[] (suivi client)
  *   listOrders()                      → Commande[] (admin)

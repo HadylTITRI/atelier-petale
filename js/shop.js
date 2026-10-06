@@ -16,6 +16,7 @@ const REFRESH_MS = 20_000;
 
 const state = {
   products: [],
+  options: [],       // options actives, chargées depuis le serveur
   status: "loading", // "loading" | "ready" | "error"
 };
 
@@ -27,12 +28,16 @@ const emptyState = (title, text = "") =>
    ========================================================================== */
 
 export async function loadCatalog() {
-  try {
-    state.products = await store.listProducts();
+  const [products, options] = await Promise.allSettled([store.listProducts(), store.listOptions()]);
+  if (products.status === "fulfilled") {
+    state.products = products.value;
+    // Sans les options, la boutique reste utilisable : les bouquets se commandent sans option.
+    if (options.status === "rejected") console.error(options.reason);
+    state.options = options.status === "fulfilled" ? options.value : [];
     state.status = "ready";
-    cart.setCatalog(state.products);
-  } catch (error) {
-    console.error(error);
+    cart.setCatalog(state.products, state.options);
+  } else {
+    console.error(products.reason);
     state.status = "error";
   }
   renderCatalog();
@@ -144,46 +149,25 @@ function changeQty(key, delta) {
 
 let customizing = null; // bouquet en cours de personnalisation
 
-const optionPrice = (def) =>
-  def.type === "quantity" ? `+${formatPrice(def.unitPriceCents)} / unité` : `+${formatPrice(def.priceCents)}`;
-
-/** Une option du formulaire : libellé + prix, puis le champ adapté à son type. */
-function optionField(def) {
-  const id = `opt-${def.id}`;
-  const label = escapeHtml(def.label);
-  let control = "";
-
-  if (def.type === "text") {
-    control = `<input id="${id}" data-option="${def.id}" maxlength="${def.maxLength}" placeholder="${escapeHtml(def.placeholder ?? "")}" autocomplete="off">`;
-  } else if (def.type === "choice") {
-    control = `<select id="${id}" data-option="${def.id}"><option value="">Sans</option>${
-      def.choices.map((c) => `<option>${escapeHtml(c)}</option>`).join("")}</select>`;
-  } else if (def.type === "toggle") {
-    control = `<label class="checkbox"><input type="checkbox" id="${id}" data-option="${def.id}"> Ajouter</label>`;
-  } else if (def.type === "quantity") {
-    control = `
-      <div class="qty">
-        <button type="button" data-step="-1" data-target="${id}" aria-label="Moins de ${label.toLowerCase()}">−</button>
-        <span class="num" id="${id}-out">0</span>
-        <button type="button" data-step="1" data-target="${id}" aria-label="Plus de ${label.toLowerCase()}">+</button>
-        <input type="hidden" id="${id}" data-option="${def.id}" value="0">
-      </div>`;
-  }
-
+/** Une option : case à cocher avec son nom et son prix. */
+function optionField(option) {
+  const id = `opt-${option.id}`;
   return `
     <div class="option">
-      <div class="option-head"><label for="${id}">${label}</label><span class="price-tag num">${optionPrice(def)}</span></div>
-      ${control}
-      ${def.help ? `<span class="hint">${escapeHtml(def.help)}</span>` : ""}
+      <div class="option-head">
+        <label class="checkbox" for="${escapeHtml(id)}">
+          <input type="checkbox" id="${escapeHtml(id)}" data-option-id="${escapeHtml(option.id)}"> ${escapeHtml(option.name)}
+        </label>
+        <span class="price-tag num">${option.priceCents ? `+${formatPrice(option.priceCents)}` : "Offert"}</span>
+      </div>
     </div>`;
 }
 
-/** Lit les options remplies dans la fenêtre : [{ id, value }]. */
+/** Lit les options cochées dans la fenêtre : [{ id }]. */
 function readSelection() {
-  return (CONFIG.bouquetOptions ?? []).map((def) => {
-    const input = $(`#opt-${def.id}`);
-    return { id: def.id, value: def.type === "toggle" ? input.checked : input.value };
-  });
+  return $$("#custom-options [data-option-id]")
+    .filter((input) => input.checked)
+    .map((input) => ({ id: input.dataset.optionId }));
 }
 
 /** Met à jour le prix affiché ; renvoie la sélection validée, ou null si une option est invalide. */
@@ -191,7 +175,7 @@ function refreshCustomTotal() {
   const error = $("#custom-error");
   let options;
   try {
-    options = normalizeSelection(readSelection());
+    options = normalizeSelection(readSelection(), state.options);
     error.hidden = true;
   } catch (e) {
     error.textContent = e.message;
@@ -213,7 +197,10 @@ function openCustomize(productId) {
   $("#custom-title").textContent = product.name;
   $("#custom-desc").textContent = product.description;
   $("#custom-visual").innerHTML = productVisual(product, 56);
-  $("#custom-options").innerHTML = `<legend>Personnalisez votre bouquet</legend>${(CONFIG.bouquetOptions ?? []).map(optionField).join("")}`;
+  const fieldset = $("#custom-options");
+  fieldset.hidden = state.options.length === 0;
+  fieldset.innerHTML = `<legend>Personnalisez votre bouquet</legend>${state.options.map(optionField).join("")}
+    <span class="hint">Une option demande une précision (initiales, prénom, couleur du ruban) ? Indiquez-la à l'étape livraison, dans « Précisions pour l'atelier ».</span>`;
   refreshCustomTotal();
   $("#custom-dialog").showModal();
 }
@@ -227,18 +214,15 @@ function submitCustomize(event) {
   event.preventDefault();
   const options = refreshCustomTotal();
   if (!options || !customizing) return;
-  cart.add(customizing.id, options.map(({ id, value }) => ({ id, value })));
+  try {
+    cart.add(customizing.id, options.map(({ id }) => ({ id })));
+  } catch (error) {
+    $("#custom-error").textContent = error.message;
+    $("#custom-error").hidden = false;
+    return;
+  }
   toast(`${customizing.name} ajouté au panier`);
   closeCustomize();
-}
-
-function stepOption(targetId, delta) {
-  const input = $(`#${targetId}`);
-  const def = CONFIG.bouquetOptions.find((d) => `opt-${d.id}` === targetId);
-  const next = Math.min(def.max, Math.max(0, Number(input.value) + delta));
-  input.value = next;
-  $(`#${targetId}-out`).textContent = next;
-  refreshCustomTotal();
 }
 
 /* ==========================================================================
@@ -286,7 +270,7 @@ function prepareCheckout() {
 function readCheckout() {
   const order = {
     items: cart.lines.map(({ productId, qty, options }) => ({
-      productId, qty, options: options.map(({ id, value }) => ({ id, value })),
+      productId, qty, options: options.map(({ id }) => ({ id })),
     })),
     customer: {}, address: {}, delivery: {},
   };
@@ -451,14 +435,10 @@ export function initShop() {
     if (event.target === event.currentTarget) closeCart();
   });
 
-  // Fenêtre de personnalisation : prix en direct, boutons +/−, fond grisé pour fermer.
+  // Fenêtre de personnalisation : prix en direct, fond grisé pour fermer.
   const custom = $("#custom-dialog");
   $("#custom-form").addEventListener("submit", submitCustomize);
-  $("#custom-form").addEventListener("input", refreshCustomTotal);
-  $("#custom-form").addEventListener("click", (event) => {
-    const step = event.target.closest("[data-step]");
-    if (step) stepOption(step.dataset.target, Number(step.dataset.step));
-  });
+  $("#custom-form").addEventListener("change", refreshCustomTotal);
   custom.addEventListener("click", (event) => {
     if (event.target === custom) closeCustomize();
   });

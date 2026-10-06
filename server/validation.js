@@ -1,10 +1,10 @@
 /**
  * Vérification de tout ce qui arrive du navigateur.
  * Les prix ne sont JAMAIS lus depuis la requête : ils sont recalculés ici à partir du catalogue
- * et de js/config.js, les mêmes fichiers que ceux utilisés par la boutique.
+ * et des options enregistrés en base, et de js/config.js (livraison).
  */
 import { CONFIG, STATUSES } from "../js/config.js";
-import { normalizeSelection } from "../js/options.js";
+import { MAX_OPTIONS_PER_ITEM, UNAVAILABLE_OPTION, normalizeSelection } from "../js/options.js";
 import { HttpError, cleanLine, isRealDate, todayIn } from "./util.js";
 
 const bad = (message) => new HttpError(400, message);
@@ -69,25 +69,41 @@ export function validateOrder(body, now = new Date()) {
     if (!isObject(item)) throw bad("Commande invalide.");
     const qty = Number(item.qty);
     if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw bad("Quantité invalide dans votre panier.");
-    return { productId: String(item.productId ?? ""), qty, options: Array.isArray(item.options) ? item.options : [] };
+    return { productId: String(item.productId ?? ""), qty, optionIds: optionIds(item.options) };
   });
   return clean;
 }
 
+/** Options cochées d'un article → identifiants (texte), sans doublon. Seul l'identifiant est lu : jamais le prix. */
+function optionIds(raw) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) throw bad("Commande invalide.");
+  if (raw.length > MAX_OPTIONS_PER_ITEM) throw bad("Trop d'options choisies.");
+  const ids = raw.map((entry) => String(isObject(entry) ? entry.id ?? "" : entry ?? ""));
+  if (!ids.every((id) => /^\d{1,10}$/.test(id))) throw bad(UNAVAILABLE_OPTION);
+  return [...new Set(ids)];
+}
+
+/** Tous les identifiants d'options d'une commande nettoyée (pour une seule lecture en base). */
+export const orderOptionIds = (clean) => [...new Set(clean.items.flatMap((item) => item.optionIds))];
+
 /**
- * Applique les vrais prix : bouquet (catalogue) + options (config.js) + livraison.
- * `products` = bouquets actifs trouvés en base pour les identifiants du panier.
+ * Applique les vrais prix : bouquet (catalogue) + options (table `options`) + livraison.
+ * `products` = bouquets trouvés en base pour les identifiants du panier.
+ * `options`  = options trouvées en base pour les identifiants choisis ; une option
+ *              absente ou désactivée fait refuser la commande.
+ * Chaque option retenue garde son nom et son prix du moment : { id, name, priceCents }.
  */
-export function priceOrder(clean, products) {
+export function priceOrder(clean, products, options = []) {
   const byId = new Map(products.map((p) => [String(p.id), p]));
-  const items = clean.items.map(({ productId, qty, options }) => {
+  const items = clean.items.map(({ productId, qty, optionIds: ids }) => {
     const product = byId.get(productId);
     if (!product || !product.active || !Object.hasOwn(CONFIG.categories, product.category)) {
       throw bad("Un article de votre panier n'est plus disponible.");
     }
     let chosen;
     try {
-      chosen = normalizeSelection(options);
+      chosen = normalizeSelection(ids, options);
     } catch (error) {
       throw bad(error.message);
     }
@@ -120,6 +136,25 @@ export function validateProduct(body) {
     imageUrl,
     active: body.active !== false,
   };
+}
+
+/** Option reçue de l'admin → option nettoyée. */
+export function validateOption(body) {
+  if (!isObject(body)) throw bad("Option invalide.");
+  const name = text(body.name, "le nom", { max: 80, required: true });
+  const priceCents = Number(body.priceCents);
+  if (body.priceCents === "" || body.priceCents == null || !Number.isInteger(priceCents) || priceCents < 0 || priceCents > 100_000_000) {
+    throw bad("Indiquez un prix de 0 DA ou plus.");
+  }
+  const sortOrder = body.sortOrder === undefined || body.sortOrder === "" ? 0 : Number(body.sortOrder);
+  if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 9999) throw bad("L'ordre d'affichage va de 0 à 9999.");
+  return { name, priceCents, sortOrder, active: body.active !== false };
+}
+
+/** Activer / désactiver une option : { active: true | false }. */
+export function validateActive(body) {
+  if (!isObject(body) || typeof body.active !== "boolean") throw bad("Indiquez active : true ou false.");
+  return body.active;
 }
 
 export function validateStatus(body) {

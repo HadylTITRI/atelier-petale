@@ -27,6 +27,25 @@ CREATE TABLE IF NOT EXISTS products (
   CONSTRAINT chk_products_price CHECK (price_cents > 0)
 ) ENGINE = InnoDB;
 
+-- ---------- Options ---------------------------------------------------------
+-- Options que le client peut ajouter à n'importe quel bouquet (emballage cadeau,
+-- ruban…), gérées depuis l'espace admin. Une option désactivée n'est plus proposée
+-- ni acceptée, mais les commandes passées gardent leur nom et leur prix (copiés dans
+-- order_items.options). Cette définition est reprise dans server/db-init.js :
+-- gardez les deux identiques (un test le vérifie).
+
+CREATE TABLE IF NOT EXISTS `options` (
+  id           INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+  name         VARCHAR(80)       NOT NULL,
+  price_cents  INT UNSIGNED      NOT NULL DEFAULT 0,      -- en centimes de dinar : 40000 = 400 DA
+  active       BOOLEAN           NOT NULL DEFAULT TRUE,   -- proposée dans la boutique
+  sort_order   SMALLINT UNSIGNED NOT NULL DEFAULT 0,      -- ordre d'affichage, du plus petit au plus grand
+  created_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_options_display (active, sort_order, name)
+) ENGINE = InnoDB;
+
 -- ---------- Commandes -------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -78,7 +97,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   product_name      VARCHAR(80)       NOT NULL,
   unit_price_cents  INT UNSIGNED      NOT NULL,                 -- prix du bouquet seul
   options_cents     INT UNSIGNED      NOT NULL DEFAULT 0,       -- total des options, par bouquet
-  options           JSON              NULL,                     -- ex. [{"id":"initiales","label":"Initiales","value":"AM","priceCents":350}]
+  options           JSON              NULL,                     -- ex. [{"id":"3","name":"Emballage cadeau premium","priceCents":40000}]
   quantity          SMALLINT UNSIGNED NOT NULL,
   PRIMARY KEY (id),
   KEY idx_order_items_order (order_id),
@@ -101,7 +120,7 @@ CREATE TABLE IF NOT EXISTS admins (
   UNIQUE KEY uq_admins_email (email)
 ) ENGINE = InnoDB;
 
--- ---------- Produits d'exemple (facultatif) ---------------------------------
+-- ---------- Exemples (facultatif) -----------------------------------------
 -- Ne s'insèrent que si la table est vide.
 
 INSERT INTO products (name, category, price_cents, description)
@@ -115,6 +134,18 @@ FROM (
   UNION ALL SELECT 'Bouquet pastel', 'bouquets', 400000, 'Roses, lisianthus et gypsophile dans des tons poudrés.'
 ) AS sample
 WHERE NOT EXISTS (SELECT 1 FROM products);
+
+-- Options d'exemple, reprises de l'ancienne configuration. Repris aussi dans server/db-init.js.
+INSERT INTO `options` (name, price_cents, sort_order)
+SELECT sample.name, sample.price_cents, sample.sort_order
+FROM (
+  SELECT 'Initiales sur le bouquet' AS name, 30000 AS price_cents, 10 AS sort_order
+  UNION ALL SELECT 'Prénom sur un ruban', 50000, 20
+  UNION ALL SELECT '3 papillons artificiels', 30000, 30
+  UNION ALL SELECT 'Ruban satin', 15000, 40
+  UNION ALL SELECT 'Emballage cadeau premium', 40000, 50
+) AS sample
+WHERE NOT EXISTS (SELECT 1 FROM `options`);
 
 -- ============================================================================
 -- Requêtes utiles pour le tableau de bord
@@ -135,7 +166,7 @@ WHERE NOT EXISTS (SELECT 1 FROM products);
 --   WHERE delivery_date = CURDATE() AND status IN ('nouvelle', 'preparation', 'livraison');
 
 -- Chiffre d'affaires (hors commandes annulées) :
---   SELECT SUM(total_cents) / 100 AS chiffre_affaires_euros
+--   SELECT SUM(total_cents) / 100 AS chiffre_affaires_dinars
 --   FROM orders WHERE status <> 'annulee';
 -- ============================================================================
 -- Base déjà créée avec l'ancienne version du schéma ? Appliquez cette migration :
@@ -145,3 +176,5 @@ WHERE NOT EXISTS (SELECT 1 FROM products);
 --   ALTER TABLE order_items
 --     ADD COLUMN options_cents INT UNSIGNED NOT NULL DEFAULT 0 AFTER unit_price_cents,
 --     ADD COLUMN options JSON NULL AFTER options_cents;
+-- La table `options` n'a pas besoin de migration manuelle : npm run db:init la crée
+-- si elle manque, sans toucher aux autres tables.

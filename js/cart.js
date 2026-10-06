@@ -1,10 +1,10 @@
 /**
  * Panier du client, gardé dans le navigateur.
- * On n'y stocke que l'identifiant du produit, la quantité et les options choisies :
- * nom et prix viennent toujours du catalogue et de config.js.
+ * On n'y stocke que l'identifiant du produit, la quantité et les identifiants des options :
+ * noms et prix viennent toujours du catalogue et des options chargés depuis le serveur.
  *
  * Un même bouquet avec des options différentes forme des lignes distinctes
- * (ex. « bouquet + initiales AM » et « bouquet nu »).
+ * (ex. « bouquet + emballage cadeau » et « bouquet nu »).
  */
 import { local } from "./utils.js";
 import { normalizeSelection, optionsTotalCents, configKey } from "./options.js";
@@ -12,21 +12,26 @@ import { normalizeSelection, optionsTotalCents, configKey } from "./options.js";
 const STORAGE_KEY = "ap_cart";
 
 class Cart {
-  #lines = local.get(STORAGE_KEY, []);   // [{ productId, qty, options: [{ id, value }] }]
+  #lines = local.get(STORAGE_KEY, []);   // [{ productId, qty, options: [{ id }] }]
   #products = new Map();                 // productId → produit du catalogue
+  #options = [];                         // options actives proposées par la boutique
   #listeners = new Set();
 
-  /** Met à jour le catalogue connu et retire les articles qui ne sont plus en vente. */
-  setCatalog(products) {
+  /**
+   * Met à jour le catalogue et les options connus, et retire les articles qui ne sont plus
+   * en vente ou dont une option a été désactivée ou supprimée par l'atelier.
+   */
+  setCatalog(products, options = []) {
     this.#products = new Map(products.map((p) => [p.id, p]));
+    this.#options = options;
     this.#lines = this.#lines.filter((line) => this.#products.has(line.productId) && this.#resolve(line));
     this.#commit();
   }
 
-  /** Options validées d'une ligne, ou null si elles ne sont plus valides (option retirée de la config…). */
+  /** Options validées d'une ligne, ou null si elles ne sont plus proposées. */
   #resolve(line) {
     try {
-      return normalizeSelection(line.options ?? []);
+      return normalizeSelection(line.options ?? [], this.#options);
     } catch {
       return null;
     }
@@ -65,9 +70,9 @@ class Cart {
     return this.#lines.length === 0;
   }
 
-  /** Ajoute un bouquet avec ses options ([{ id, value }]). Lève une erreur si une option est invalide. */
+  /** Ajoute un bouquet avec ses options ([{ id }]). Lève une erreur si une option n'est pas proposée. */
   add(productId, options = [], qty = 1) {
-    const clean = normalizeSelection(options).map(({ id, value }) => ({ id, value }));
+    const clean = normalizeSelection(options, this.#options).map(({ id }) => ({ id }));
     const key = configKey(productId, clean);
     const line = this.#lines.find((l) => configKey(l.productId, this.#resolve(l) ?? []) === key);
     if (line) line.qty = Math.min(line.qty + qty, 99);

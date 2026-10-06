@@ -1,5 +1,5 @@
 /**
- * Partie administration : connexion, commandes et produits.
+ * Partie administration : connexion, commandes, produits et options.
  * Visible uniquement après connexion avec un compte administrateur.
  */
 import { CONFIG, STATUSES, ACTIVE_STATUSES } from "./config.js";
@@ -13,9 +13,11 @@ import {
 const state = {
   orders: [],
   products: [],
+  options: [],
   filter: "active",      // "active" | "all" | un statut
   selectedId: null,      // commande affichée dans le détail
   confirmDeleteId: null, // produit en attente de confirmation de suppression
+  confirmDeleteOptionId: null, // option en attente de confirmation de suppression
   unsubscribe: null,
 };
 
@@ -59,12 +61,12 @@ async function logout() {
 export async function startAdmin() {
   state.unsubscribe?.();
   state.unsubscribe = store.subscribeToOrders(onOrdersChanged);
-  await Promise.all([loadOrders(), loadProducts()]);
+  await Promise.all([loadOrders(), loadProducts(), loadOptions()]);
 }
 
 export function stopAdmin() {
   state.unsubscribe?.();
-  Object.assign(state, { orders: [], products: [], selectedId: null, unsubscribe: null });
+  Object.assign(state, { orders: [], products: [], options: [], selectedId: null, unsubscribe: null });
 }
 
 /* ==========================================================================
@@ -339,6 +341,138 @@ async function deleteProduct(id) {
 }
 
 /* ==========================================================================
+   Options (communes à tous les bouquets)
+   ========================================================================== */
+
+/** 40000 centimes → « 400 » ; 40050 → « 400,5 » (pour le champ du formulaire). */
+const priceInput = (cents) => String(cents / 100).replace(".", ",");
+
+async function loadOptions() {
+  try {
+    state.options = await store.listOptions({ includeHidden: true });
+  } catch (error) {
+    toast(error.message);
+  }
+  renderOptions();
+}
+
+function renderOptions() {
+  const list = $("#option-list");
+  if (!state.options.length) {
+    list.innerHTML = emptyState("Aucune option", "Ajoutez une option (emballage cadeau, ruban…) avec le formulaire : elle sera proposée pour tous les bouquets.");
+    return;
+  }
+  list.innerHTML = state.options.map((o) => `
+    <div class="product-row option-row ${o.active ? "" : "hidden-product"}">
+      <div>
+        <strong>${escapeHtml(o.name)}</strong>
+        <div class="muted num" style="font-size:13px">${o.priceCents ? `+${formatPrice(o.priceCents)}` : "Offerte"} · ordre ${o.sortOrder}${o.active ? "" : " · désactivée"}</div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" data-edit-option="${escapeHtml(o.id)}">Modifier</button>
+        <button type="button" class="btn" data-toggle-option="${escapeHtml(o.id)}">${o.active ? "Désactiver" : "Activer"}</button>
+        <button type="button" class="btn btn-danger" data-delete-option="${escapeHtml(o.id)}">
+          ${state.confirmDeleteOptionId === o.id ? "Confirmer" : "Supprimer"}
+        </button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function fillOptionForm(option) {
+  $("#of-id").value = option?.id ?? "";
+  $("#of-name").value = option?.name ?? "";
+  $("#of-price").value = option ? priceInput(option.priceCents) : "";
+  $("#of-order").value = option?.sortOrder ?? nextSortOrder();
+  $("#of-active").checked = option?.active ?? true;
+
+  $("#option-form-title").textContent = option ? "Modifier l'option" : "Ajouter une option";
+  $("#of-submit").textContent = option ? "Enregistrer" : "Ajouter l'option";
+  $("#of-cancel").hidden = !option;
+  $("#option-error").hidden = true;
+  if (option) $("#of-name").focus();
+}
+
+/** Ordre proposé pour une nouvelle option : après la dernière, par pas de 10. */
+const nextSortOrder = () => Math.min(9999, Math.max(0, ...state.options.map((o) => o.sortOrder)) + 10);
+
+async function submitOption(event) {
+  event.preventDefault();
+  const errorEl = $("#option-error");
+  const priceText = $("#of-price").value.trim();
+  const orderText = $("#of-order").value.trim();
+  const option = {
+    id: $("#of-id").value || undefined,
+    name: $("#of-name").value.trim(),
+    priceCents: priceText ? parsePrice(priceText) : NaN,
+    sortOrder: orderText ? Number(orderText) : 0,
+    active: $("#of-active").checked,
+  };
+
+  if (!option.name || !(option.priceCents >= 0)) {
+    errorEl.textContent = "Indiquez un nom et un prix (0 pour une option offerte, ex. 400).";
+    errorEl.hidden = false;
+    return;
+  }
+  if (!Number.isInteger(option.sortOrder) || option.sortOrder < 0 || option.sortOrder > 9999) {
+    errorEl.textContent = "L'ordre d'affichage est un nombre entier de 0 à 9999.";
+    errorEl.hidden = false;
+    return;
+  }
+
+  try {
+    await store.saveOption(option);
+    toast(option.id ? "Option enregistrée" : "Option ajoutée");
+    await loadOptions();
+    fillOptionForm(null);
+    hooks.onCatalogChange();
+  } catch (error) {
+    errorEl.textContent = error.message;
+    errorEl.hidden = false;
+  }
+}
+
+async function toggleOption(id) {
+  const option = state.options.find((o) => o.id === id);
+  if (!option) return;
+  try {
+    await store.setOptionActive(id, !option.active);
+    toast(option.active ? "Option désactivée" : "Option activée");
+    await loadOptions();
+    if ($("#of-id").value === id) $("#of-active").checked = !option.active;
+    hooks.onCatalogChange();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function deleteOption(id) {
+  // Premier clic : demande confirmation. Second clic (dans les 4 s) : supprime.
+  if (state.confirmDeleteOptionId !== id) {
+    state.confirmDeleteOptionId = id;
+    renderOptions();
+    setTimeout(() => {
+      if (state.confirmDeleteOptionId === id) {
+        state.confirmDeleteOptionId = null;
+        renderOptions();
+      }
+    }, 4000);
+    return;
+  }
+
+  state.confirmDeleteOptionId = null;
+  try {
+    await store.deleteOption(id);
+    toast("Option supprimée");
+    await loadOptions();
+    if ($("#of-id").value === id) fillOptionForm(null);
+    hooks.onCatalogChange();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ==========================================================================
    Initialisation
    ========================================================================== */
 
@@ -346,6 +480,8 @@ function selectTab(tab) {
   $$("[data-admin-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.adminTab === tab));
   $("#admin-orders").hidden = tab !== "orders";
   $("#admin-products").hidden = tab !== "products";
+  $("#admin-options").hidden = tab !== "options";
+  if (tab === "options" && !$("#of-id").value && !$("#of-name").value) fillOptionForm(null);
 }
 
 export function initAdmin(appHooks) {
@@ -365,6 +501,8 @@ export function initAdmin(appHooks) {
   $("#login-form").addEventListener("submit", submitLogin);
   $("#product-form").addEventListener("submit", submitProduct);
   $("#pf-cancel").addEventListener("click", () => fillProductForm(null));
+  $("#option-form").addEventListener("submit", submitOption);
+  $("#of-cancel").addEventListener("click", () => fillOptionForm(null));
 
   $("#view-admin").addEventListener("click", (event) => {
     const el = event.target.closest("button");
@@ -378,5 +516,8 @@ export function initAdmin(appHooks) {
     else if (d.copy) copyText(d.copy);
     else if (d.editProduct) fillProductForm(state.products.find((p) => p.id === d.editProduct));
     else if (d.deleteProduct) deleteProduct(d.deleteProduct);
+    else if (d.editOption) fillOptionForm(state.options.find((o) => o.id === d.editOption));
+    else if (d.toggleOption) toggleOption(d.toggleOption);
+    else if (d.deleteOption) deleteOption(d.deleteOption);
   });
 }

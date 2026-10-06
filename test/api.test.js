@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -6,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { CONFIG } from "../js/config.js";
 import { hashPassword, signToken, verifyPassword, verifyToken } from "../server/auth.js";
 import { createApp } from "../server/app.js";
+import { OPTIONS_TABLE_SQL, SAMPLE_OPTIONS } from "../server/db-init.js";
+import { describeOption, normalizeSelection } from "../js/options.js";
 import { createMemoryRepo } from "./memory-repo.js";
 
 const SECRET = "x".repeat(40);
@@ -34,6 +37,12 @@ before(async () => {
       { name: "Bouquet pivoines", priceCents: 450000 },
       { name: "Bouquet masqué", priceCents: 100000, active: false },
     ],
+    // Identifiants attribués dans l'ordre : "1", "2", "3".
+    options: [
+      { name: "Emballage cadeau premium", priceCents: 40000, sortOrder: 20 },
+      { name: "Ruban satin", priceCents: 15000, sortOrder: 10 },
+      { name: "Papillons (désactivée)", priceCents: 30000, sortOrder: 30, active: false },
+    ],
     admins: [{ email: ADMIN.email, passwordHash: await hashPassword(ADMIN.password) }],
   });
   const app = createApp({ repo, secret: SECRET, rootDir: root, orderLimitPerHour: 1000 });
@@ -50,10 +59,14 @@ const call = (method, url, { body, cookie, headers = {} } = {}) =>
     body: body ? JSON.stringify(body) : undefined,
   });
 
+/** Session admin, ouverte une seule fois : la connexion est limitée à 10 essais par 15 minutes. */
+let adminCookie;
 async function login() {
+  if (adminCookie) return adminCookie;
   const res = await call("POST", "/api/auth/login", { body: { email: ADMIN.email, password: ADMIN.password } });
   assert.equal(res.status, 200);
-  return res.headers.get("set-cookie").split(";")[0];
+  adminCookie = res.headers.get("set-cookie").split(";")[0];
+  return adminCookie;
 }
 
 describe("auth (mots de passe et jetons)", () => {
@@ -80,13 +93,25 @@ describe("catalogue public", () => {
   });
 });
 
+describe("options publiques", () => {
+  it("ne renvoie que les options actives, dans l'ordre d'affichage, sans champ interne", async () => {
+    const res = await call("GET", "/api/options");
+    assert.equal(res.status, 200);
+    const options = await res.json();
+    assert.deepEqual(options.map((o) => o.name), ["Ruban satin", "Emballage cadeau premium"]);
+    assert.deepEqual(Object.keys(options[0]).sort(), ["id", "name", "priceCents", "sortOrder"]);
+    assert.equal(options[0].priceCents, 15000);
+  });
+});
+
 describe("commandes", () => {
-  it("enregistre une commande et recalcule les prix avec les options", async () => {
+  it("enregistre une commande et recalcule le prix des options depuis la base", async () => {
     const order = validOrder({
       items: [{ productId: "1", qty: 2, options: [
-        { id: "initiales", value: "am" }, { id: "papillons", value: 3 }, { id: "emballage", value: true },
-        // un prix envoyé par le navigateur doit être ignoré
-        { id: "ruban", value: "Doré", priceCents: 1 },
+        // un prix ou un nom envoyés par le navigateur doivent être ignorés
+        { id: "1", priceCents: 1, name: "Gratuit" },
+        { id: "2" },
+        { id: "2" }, // en double : compté une seule fois
       ] }],
     });
     const res = await call("POST", "/api/orders", { body: order });
@@ -95,11 +120,36 @@ describe("commandes", () => {
     assert.match(code, /^AP-[A-Z2-9]{6}$/);
 
     const stored = repo.state.orders.find((o) => o.code === code);
-    const extras = 30000 + 3 * 10000 + 40000 + 15000;
+    const extras = 40000 + 15000;
     assert.equal(stored.items[0].optionsCents, extras);
-    assert.equal(stored.items[0].options.find((o) => o.id === "initiales").value, "AM");
+    // Nom et prix copiés dans la commande, dans l'ordre d'affichage (ruban : ordre 10, emballage : 20).
+    assert.deepEqual(stored.items[0].options, [
+      { id: "2", name: "Ruban satin", priceCents: 15000 },
+      { id: "1", name: "Emballage cadeau premium", priceCents: 40000 },
+    ]);
     assert.equal(stored.subtotalCents, (450000 + extras) * 2);
     assert.equal(stored.totalCents, stored.subtotalCents + CONFIG.deliveryFeeCents);
+  });
+
+  it("une commande garde le nom et le prix de l'option même si l'admin la modifie ensuite", async () => {
+    const extra = repo.state.options.push({ id: "50", name: "Carte parfumée", priceCents: 20000, active: true, sortOrder: 5 });
+    assert.ok(extra);
+    const { code } = await (await call("POST", "/api/orders", {
+      body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "50" }] }] }),
+    })).json();
+
+    const cookie = await login();
+    await call("PUT", "/api/admin/options/50", { cookie, body: { name: "Carte", priceCents: 99000, sortOrder: 5, active: true } });
+    await call("DELETE", "/api/admin/options/50", { cookie });
+
+    const [order] = await (await call("POST", "/api/orders/lookup", { body: { codes: [code] } })).json();
+    assert.deepEqual(order.items[0].options, [{ id: "50", name: "Carte parfumée", priceCents: 20000 }]);
+    assert.equal(order.items[0].optionsCents, 20000);
+  });
+
+  it("une commande sans option reste possible", async () => {
+    const res = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1 }] }) });
+    assert.equal(res.status, 201);
   });
 
   const rejected = [
@@ -108,10 +158,13 @@ describe("commandes", () => {
     ["panier vide", validOrder({ items: [] })],
     ["quantité 0", validOrder({ items: [{ productId: "1", qty: 0, options: [] }] })],
     ["quantité décimale", validOrder({ items: [{ productId: "1", qty: 1.5, options: [] }] })],
-    ["option inconnue", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "hack", value: 1 }] }] })],
-    ["trop de papillons", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "papillons", value: 99 }] }] })],
-    ["ruban hors liste", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "ruban", value: "Vert" }] }] })],
-    ["initiales trop longues", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "initiales", value: "ABCD" }] }] })],
+    ["option inconnue", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "999" }] }] })],
+    ["option désactivée", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "3" }] }] })],
+    ["option valide + option désactivée", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "1" }, { id: "3" }] }] })],
+    ["identifiant d'option non numérique", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "initiales", value: "AM" }] }] })],
+    ["identifiant d'option piégé", validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: "1 OR 1=1" }] }] })],
+    ["options qui ne sont pas une liste", validOrder({ items: [{ productId: "1", qty: 1, options: { id: "1" } }] })],
+    ["trop d'options", validOrder({ items: [{ productId: "1", qty: 1, options: Array.from({ length: 31 }, () => ({ id: "1" })) }] })],
     ["téléphone trop court", validOrder({ customer: { name: "A", phone: "123", email: "" } })],
     ["code postal invalide", validOrder({ address: { street: "x", zip: "16A", city: "Alger" } })],
     ["date passée", validOrder({ delivery: { date: "2020-01-01", slot: CONFIG.deliverySlots[0] } })],
@@ -147,10 +200,17 @@ describe("commandes", () => {
 
 describe("administration", () => {
   it("exige une connexion", async () => {
-    for (const [method, url] of [["GET", "/api/admin/orders"], ["GET", "/api/admin/products"], ["GET", "/api/admin/orders/stamp"], ["GET", "/api/auth/me"]]) {
+    for (const [method, url] of [["GET", "/api/admin/orders"], ["GET", "/api/admin/products"], ["GET", "/api/admin/orders/stamp"], ["GET", "/api/auth/me"], ["GET", "/api/admin/options"]]) {
       assert.equal((await call(method, url)).status, 401, url);
     }
     assert.equal((await call("POST", "/api/admin/products", { body: { name: "x" } })).status, 401);
+    const option = { name: "Pirate", priceCents: 0, sortOrder: 0, active: true };
+    assert.equal((await call("POST", "/api/admin/options", { body: option })).status, 401);
+    assert.equal((await call("PUT", "/api/admin/options/1", { body: option })).status, 401);
+    assert.equal((await call("PATCH", "/api/admin/options/1/active", { body: { active: false } })).status, 401);
+    assert.equal((await call("DELETE", "/api/admin/options/1")).status, 401);
+    assert.equal((await call("GET", "/api/admin/options", { cookie: "ap_session=n-importe-quoi" })).status, 401);
+    assert.ok(repo.state.options.some((o) => o.id === "1" && o.active && o.name === "Emballage cadeau premium"));
     assert.equal((await call("GET", "/api/admin/orders", { cookie: "ap_session=n-importe-quoi" })).status, 401);
   });
 
@@ -204,6 +264,69 @@ describe("administration", () => {
     }
   });
 
+  it("liste toutes les options, désactivées comprises", async () => {
+    const cookie = await login();
+    const options = await (await call("GET", "/api/admin/options", { cookie })).json();
+    assert.ok(options.some((o) => o.name === "Papillons (désactivée)" && o.active === false));
+    assert.ok(options.every((o) => typeof o.id === "string" && Number.isInteger(o.sortOrder)));
+  });
+
+  it("crée, modifie, désactive, réactive et supprime une option", async () => {
+    const cookie = await login();
+    const created = await call("POST", "/api/admin/options", { cookie, body: { name: "  Vase en verre  ", priceCents: 80000, sortOrder: 1 } });
+    assert.equal(created.status, 201);
+    const option = await created.json();
+    assert.deepEqual({ ...option, id: undefined }, { id: undefined, name: "Vase en verre", priceCents: 80000, sortOrder: 1, active: true });
+
+    // Proposée dans la boutique, en premier (ordre 1)
+    assert.equal((await (await call("GET", "/api/options")).json())[0].id, option.id);
+
+    const updated = await call("PUT", `/api/admin/options/${option.id}`, { cookie, body: { ...option, priceCents: 0, sortOrder: 99 } });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).priceCents, 0);
+
+    const off = await call("PATCH", `/api/admin/options/${option.id}/active`, { cookie, body: { active: false } });
+    assert.equal((await off.json()).active, false);
+    assert.ok(!(await (await call("GET", "/api/options")).json()).some((o) => o.id === option.id));
+    const refused = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: option.id }] }] }) });
+    assert.equal(refused.status, 400);
+
+    const on = await call("PATCH", `/api/admin/options/${option.id}/active`, { cookie, body: { active: true } });
+    assert.equal((await on.json()).active, true);
+    const accepted = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: option.id }] }] }) });
+    assert.equal(accepted.status, 201);
+
+    assert.equal((await call("DELETE", `/api/admin/options/${option.id}`, { cookie })).status, 200);
+    assert.equal((await call("DELETE", `/api/admin/options/${option.id}`, { cookie })).status, 404);
+    assert.equal((await call("PUT", `/api/admin/options/${option.id}`, { cookie, body: option })).status, 404);
+    assert.equal((await call("PATCH", `/api/admin/options/${option.id}/active`, { cookie, body: { active: true } })).status, 404);
+    const gone = await call("POST", "/api/orders", { body: validOrder({ items: [{ productId: "1", qty: 1, options: [{ id: option.id }] }] }) });
+    assert.equal(gone.status, 400);
+  });
+
+  it("refuse les options invalides", async () => {
+    const cookie = await login();
+    const base = { name: "X", priceCents: 1000, sortOrder: 0, active: true };
+    for (const bad of [{ name: "" }, { name: "   " }, { name: "x".repeat(81) }, { priceCents: -1 }, { priceCents: 12.5 }, { priceCents: "" },
+      { priceCents: null }, { priceCents: "abc" }, { priceCents: 100_000_001 }, { sortOrder: -1 }, { sortOrder: 1.5 }, { sortOrder: 10000 }]) {
+      const res = await call("POST", "/api/admin/options", { cookie, body: { ...base, ...bad } });
+      assert.equal(res.status, 400, JSON.stringify(bad));
+    }
+    assert.equal((await call("POST", "/api/admin/options", { cookie, body: [] })).status, 400);
+    for (const bad of [{}, { active: "false" }, { active: 0 }, { active: null }]) {
+      const res = await call("PATCH", "/api/admin/options/1/active", { cookie, body: bad });
+      assert.equal(res.status, 400, JSON.stringify(bad));
+    }
+    assert.equal((await call("PUT", "/api/admin/options/abc", { cookie, body: base })).status, 404);
+  });
+
+  it("refuse une modification d'option venue d'un autre site (CSRF)", async () => {
+    const cookie = await login();
+    const res = await call("DELETE", "/api/admin/options/1", { cookie, headers: { Origin: "https://site-malveillant.example" } });
+    assert.equal(res.status, 403);
+    assert.ok(repo.state.options.some((o) => o.id === "1"));
+  });
+
   it("refuse une requête venue d'un autre site (CSRF)", async () => {
     const cookie = await login();
     const res = await call("PATCH", "/api/admin/orders/1/status", { cookie, body: { status: "livree" }, headers: { Origin: "https://site-malveillant.example" } });
@@ -213,6 +336,50 @@ describe("administration", () => {
   it("la déconnexion supprime le cookie", async () => {
     const res = await call("POST", "/api/auth/logout", { body: {} });
     assert.match(res.headers.get("set-cookie"), /Max-Age=0/);
+  });
+});
+
+describe("module des options (partagé boutique / serveur)", () => {
+  const available = [
+    { id: "1", name: "B", priceCents: 100, sortOrder: 5, active: true },
+    { id: "2", name: "A", priceCents: 200, sortOrder: 5, active: true },
+    { id: "3", name: "C", priceCents: 300, sortOrder: 1, active: false },
+  ];
+  it("trie par ordre puis par nom et ne garde que l'identifiant, le nom et le prix", () => {
+    assert.deepEqual(normalizeSelection([{ id: "1" }, "2"], available), [
+      { id: "2", name: "A", priceCents: 200 },
+      { id: "1", name: "B", priceCents: 100 },
+    ]);
+  });
+  it("refuse une option désactivée ou inconnue", () => {
+    assert.throws(() => normalizeSelection([{ id: "3" }], available));
+    assert.throws(() => normalizeSelection([{ id: "9" }], available));
+    assert.throws(() => normalizeSelection([{ id: "1" }], []));
+  });
+  it("affiche aussi les options des anciennes commandes", () => {
+    assert.equal(describeOption({ id: "1", name: "Ruban satin", priceCents: 15000 }), "Ruban satin");
+    assert.equal(describeOption({ id: "initiales", label: "Initiales", value: "AM", priceCents: 30000 }), "Initiales : AM");
+    assert.equal(describeOption({ id: "papillons", label: "Papillons artificiels", value: 3, priceCents: 30000 }), "Papillons artificiels × 3");
+    assert.equal(describeOption({ id: "emballage", label: "Emballage cadeau premium", value: true, priceCents: 40000 }), "Emballage cadeau premium");
+  });
+});
+
+describe("schéma de la base", () => {
+  const normalize = (sql) => sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+
+  it("db-init.js et schema.sql créent la même table options", async () => {
+    const schema = await readFile(path.join(root, "database/schema.sql"), "utf8");
+    const block = schema.match(/CREATE TABLE IF NOT EXISTS `options`[\s\S]*?ENGINE = InnoDB/);
+    assert.ok(block, "table options absente de schema.sql");
+    assert.equal(normalize(block[0]), normalize(OPTIONS_TABLE_SQL));
+  });
+
+  it("db-init.js et schema.sql proposent les mêmes options d'exemple", async () => {
+    const schema = await readFile(path.join(root, "database/schema.sql"), "utf8");
+    for (const o of SAMPLE_OPTIONS) {
+      const sqlName = o.name.replace(/'/g, "''");
+      assert.match(schema, new RegExp(`'${sqlName}'(?: AS name)?, ${o.priceCents}(?: AS price_cents)?, ${o.sortOrder}`), o.name);
+    }
   });
 });
 

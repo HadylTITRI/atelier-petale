@@ -11,7 +11,9 @@ import { CONFIG } from "../js/config.js";
 import { DUMMY_HASH, signToken, verifyPassword, verifyToken } from "./auth.js";
 import { createLimiter } from "./rate-limit.js";
 import { HttpError, ORDER_CODE_PATTERN, makeOrderCode } from "./util.js";
-import { priceOrder, validateOrder, validateProduct, validateStatus } from "./validation.js";
+import {
+  orderOptionIds, priceOrder, validateActive, validateOption, validateOrder, validateProduct, validateStatus,
+} from "./validation.js";
 
 const SESSION_COOKIE = "ap_session";
 const SESSION_MS = 12 * 60 * 60 * 1000; // 12 h
@@ -158,12 +160,21 @@ export function createApp({ repo, secret, production = false, trustProxy = false
       return send(res, 200, await repo.listProducts({ includeHidden: false }));
     }
 
+    if (method === "GET" && pathname === "/api/options") {
+      const options = await repo.listOptions({ includeHidden: false });
+      return send(res, 200, options.map(({ id, name, priceCents, sortOrder }) => ({ id, name, priceCents, sortOrder })));
+    }
+
     if (method === "POST" && pathname === "/api/orders") {
       limit(req, "order");
       const clean = validateOrder(await readJson(req));
       const ids = [...new Set(clean.items.map((item) => item.productId))];
-      const products = await repo.getProductsByIds(ids);
-      const order = priceOrder(clean, products);
+      const optionIds = orderOptionIds(clean);
+      const [products, options] = await Promise.all([
+        repo.getProductsByIds(ids),
+        optionIds.length ? repo.getOptionsByIds(optionIds) : [],
+      ]);
+      const order = priceOrder(clean, products, options);
       const code = await repo.createOrder(order, makeOrderCode);
       return send(res, 201, { code });
     }
@@ -223,6 +234,33 @@ export function createApp({ repo, secret, production = false, trustProxy = false
       if (productMatch && method === "DELETE") {
         if (!(await repo.deleteProduct(productMatch[1]))) throw new HttpError(404, "Produit introuvable.");
         return send(res, 200, { ok: true });
+      }
+
+      if (method === "GET" && pathname === "/api/admin/options") {
+        return send(res, 200, await repo.listOptions({ includeHidden: true }));
+      }
+      if (method === "POST" && pathname === "/api/admin/options") {
+        const option = validateOption(await readJson(req));
+        return send(res, 201, await repo.createOption(option));
+      }
+
+      const optionMatch = pathname.match(/^\/api\/admin\/options\/(\d{1,10})$/);
+      if (optionMatch && method === "PUT") {
+        const option = validateOption(await readJson(req));
+        const saved = await repo.updateOption(optionMatch[1], option);
+        if (!saved) throw new HttpError(404, "Option introuvable.");
+        return send(res, 200, saved);
+      }
+      if (optionMatch && method === "DELETE") {
+        if (!(await repo.deleteOption(optionMatch[1]))) throw new HttpError(404, "Option introuvable.");
+        return send(res, 200, { ok: true });
+      }
+      const optionActiveMatch = pathname.match(/^\/api\/admin\/options\/(\d{1,10})\/active$/);
+      if (optionActiveMatch && method === "PATCH") {
+        const active = validateActive(await readJson(req));
+        const saved = await repo.setOptionActive(optionActiveMatch[1], active);
+        if (!saved) throw new HttpError(404, "Option introuvable.");
+        return send(res, 200, saved);
       }
 
       if (method === "GET" && pathname === "/api/admin/orders") {
