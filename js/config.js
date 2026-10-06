@@ -3,7 +3,7 @@
  * C'est le seul fichier à modifier pour personnaliser le site.
  */
 export const CONFIG = {
-  shopName: "Atelier Pétale",
+  shopName: "Nour Flower",
 
   /**
    * "api"   → vraie boutique : le site parle au serveur Node.js (dossier server/), qui utilise MySQL.
