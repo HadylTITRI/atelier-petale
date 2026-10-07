@@ -18,6 +18,16 @@ import {
 const SESSION_COOKIE = "ap_session";
 const SESSION_MS = 12 * 60 * 60 * 1000; // 12 h
 const MAX_BODY_BYTES = 100_000;
+/** Photo importée : le navigateur la réduit avant l'envoi (environ 200 Ko) ; au-delà de 3 Mo, refus. */
+const MAX_IMAGE_BYTES = 3_000_000;
+
+/** Formats de photo acceptés, reconnus à leurs premiers octets (jamais au type annoncé : pas de SVG ni de HTML déguisé). */
+function imageType(data) {
+  if (data.length > 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data.length > 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (data.length > 12 && data.toString("latin1", 0, 4) === "RIFF" && data.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  return null;
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -57,6 +67,18 @@ function parseCookies(header = "") {
     if (index > 0) cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
   }
   return cookies;
+}
+
+/** Corps brut de la requête, limité à `max` octets. */
+async function readBody(req, max) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > max) throw new HttpError(413, "Photo trop lourde (3 Mo maximum).");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(req) {
@@ -246,6 +268,19 @@ export function createApp({ repo, secret, production = false, trustProxy = false
         return send(res, 200, { ok: true });
       }
 
+      if (method === "POST" && pathname === "/api/admin/images") {
+        if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("image/")) {
+          throw new HttpError(415, "Envoyez une photo (JPEG, PNG ou WebP).");
+        }
+        const data = await readBody(req, MAX_IMAGE_BYTES);
+        const type = imageType(data);
+        if (!type) throw new HttpError(400, "Format de photo non pris en charge (JPEG, PNG ou WebP).");
+        const id = await repo.createImage(type, data);
+        // Ménage : les photos importées mais jamais utilisées (formulaire abandonné, photo remplacée).
+        await repo.deleteUnusedImages();
+        return send(res, 201, { url: `/images/${id}` });
+      }
+
       if (method === "GET" && pathname === "/api/admin/options") {
         return send(res, 200, await repo.listOptions({ includeHidden: true }));
       }
@@ -329,6 +364,20 @@ export function createApp({ repo, secret, production = false, trustProxy = false
     res.end(req.method === "HEAD" ? undefined : content);
   }
 
+  /** Photo importée : /images/<id>. Une adresse ne change jamais de contenu, d'où le long cache. */
+  async function serveImage(req, res, pathname) {
+    const match = pathname.match(/^\/images\/(\d{1,10})$/);
+    if (!match || !["GET", "HEAD"].includes(req.method)) throw new HttpError(404, "Photo introuvable.");
+    const image = await repo.getImage(match[1]);
+    if (!image) throw new HttpError(404, "Photo introuvable.");
+    res.writeHead(200, {
+      "Content-Type": image.contentType,
+      "Content-Length": image.data.length,
+      "Cache-Control": "public, max-age=31536000, immutable",
+    });
+    res.end(req.method === "HEAD" ? undefined : image.data);
+  }
+
   /* --------------------------- point d'entrée --------------------------- */
 
   return async function handle(req, res) {
@@ -343,6 +392,7 @@ export function createApp({ repo, secret, production = false, trustProxy = false
         return res.end("ok");
       }
       if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+      if (url.pathname.startsWith("/images/")) return await serveImage(req, res, url.pathname);
       return await serveStatic(req, res, url.pathname);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;

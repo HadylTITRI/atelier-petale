@@ -399,6 +399,80 @@ describe("administration", () => {
   });
 });
 
+describe("photos importées depuis l'appareil", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40, 1)]);
+  const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(40, 2)]);
+  const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP"), Buffer.alloc(40, 3)]);
+  const upload = (data, { cookie, type = "image/png", headers = {} } = {}) =>
+    fetch(`${base}/api/admin/images`, { method: "POST", headers: { "Content-Type": type, ...(cookie ? { Cookie: cookie } : {}), ...headers }, body: data });
+
+  it("importe une photo, la sert avec son type, et un produit peut l'utiliser", async () => {
+    const cookie = await login();
+    for (const [data, type] of [[PNG, "image/png"], [JPEG, "image/jpeg"], [WEBP, "image/webp"]]) {
+      const res = await upload(data, { cookie, type });
+      assert.equal(res.status, 201);
+      const { url } = await res.json();
+      assert.match(url, /^\/images\/\d+$/);
+      const image = await call("GET", url);
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get("content-type"), type);
+      assert.match(image.headers.get("cache-control"), /immutable/);
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()), data);
+    }
+
+    const { url } = await (await upload(JPEG, { cookie, type: "image/jpeg" })).json();
+    const created = await call("POST", "/api/admin/products", { cookie, body: { name: "Bouquet photo", category: "bouquets", priceCents: 100000, imageUrl: url } });
+    assert.equal(created.status, 201);
+    assert.equal((await created.json()).imageUrl, url);
+  });
+
+  it("le type est lu dans la photo elle-même, pas dans ce qu'annonce le navigateur", async () => {
+    const cookie = await login();
+    const { url } = await (await upload(PNG, { cookie, type: "image/jpeg" })).json();
+    assert.equal((await call("GET", url)).headers.get("content-type"), "image/png");
+  });
+
+  it("refuse ce qui n'est pas une photo JPEG, PNG ou WebP", async () => {
+    const cookie = await login();
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    assert.equal((await upload(svg, { cookie, type: "image/svg+xml" })).status, 400);
+    assert.equal((await upload(Buffer.from("<html>"), { cookie, type: "image/png" })).status, 400);
+    assert.equal((await upload(Buffer.alloc(0), { cookie })).status, 400);
+    assert.equal((await upload(PNG, { cookie, type: "text/plain" })).status, 415);
+    assert.equal((await upload(Buffer.concat([PNG, Buffer.alloc(3_000_001)]), { cookie })).status, 413);
+  });
+
+  it("exige une connexion admin et refuse un autre site", async () => {
+    const before = repo.state.images.length;
+    assert.equal((await upload(PNG)).status, 401);
+    const cookie = await login();
+    assert.equal((await upload(PNG, { cookie, headers: { Origin: "https://site-malveillant.example" } })).status, 403);
+    assert.equal(repo.state.images.length, before);
+  });
+
+  it("répond 404 pour une photo absente ou une adresse invalide", async () => {
+    for (const url of ["/images/99999", "/images/abc", "/images/1/../../package.json", "/images/"]) {
+      assert.equal((await call("GET", url)).status, 404, url);
+    }
+  });
+
+  it("n'accepte comme photo de produit qu'un lien http(s) ou une photo importée", async () => {
+    const cookie = await login();
+    const product = { name: "X", category: "bouquets", priceCents: 1000 };
+    for (const imageUrl of ["/images/abc", "/images/1?x", "/server/app.js", "data:image/png;base64,AAAA", "//exemple.dz/photo.jpg"]) {
+      assert.equal((await call("POST", "/api/admin/products", { cookie, body: { ...product, imageUrl } })).status, 400, imageUrl);
+    }
+  });
+
+  it("supprime les photos inutilisées depuis plus d'un jour, garde les autres", async () => {
+    const cookie = await login();
+    const used = repo.state.images.find((i) => repo.state.products.some((p) => p.imageUrl === `/images/${i.id}`));
+    repo.state.images.forEach((i) => (i.createdAt -= 2 * 24 * 3600 * 1000));
+    const { url } = await (await upload(PNG, { cookie })).json();
+    assert.deepEqual(repo.state.images.map((i) => `/images/${i.id}`).sort(), [`/images/${used.id}`, url].sort());
+  });
+});
+
 describe("module des options (partagé boutique / serveur)", () => {
   const available = [
     { id: "1", name: "B", priceCents: 100, sortOrder: 5, active: true },

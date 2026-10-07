@@ -50,6 +50,21 @@ export function createApiStore() {
     },
 
     /** Options des bouquets : actives seulement pour la boutique, toutes pour l'admin. */
+    /** Envoie une photo (déjà réduite) ; renvoie { url } à mettre dans `imageUrl`. */
+    async uploadImage(blob) {
+      let response;
+      try {
+        response = await fetch("/api/admin/images", {
+          method: "POST", headers: { "Content-Type": blob.type }, body: blob, credentials: "same-origin",
+        });
+      } catch {
+        throw new Error("Connexion au serveur impossible. Vérifiez votre connexion internet.");
+      }
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error ?? "La photo n'a pas pu être envoyée.");
+      return data;
+    },
+
     async listOptions({ includeHidden = false } = {}) {
       return request("GET", includeHidden ? "/api/admin/options" : "/api/options");
     },

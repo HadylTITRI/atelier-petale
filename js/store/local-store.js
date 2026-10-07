@@ -95,6 +95,17 @@ export function createLocalStore() {
       local.set(KEYS.products, readProducts().filter((p) => p.id !== id));
     },
 
+    /** Mode démo : la photo reste dans le navigateur, sous forme de « data URL ». */
+    async uploadImage(blob) {
+      const url = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("La photo n'a pas pu être lue."));
+        reader.readAsDataURL(blob);
+      });
+      return { url };
+    },
+
     async listOptions({ includeHidden = false } = {}) {
       return sortOptions(readOptions().filter((o) => includeHidden || o.active));
     },

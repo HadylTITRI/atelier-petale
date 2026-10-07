@@ -295,6 +295,9 @@ function fillProductForm(product) {
   $("#pf-price").value = product ? (product.priceCents / 100).toFixed(2).replace(".", ",") : "";
   $("#pf-description").value = product?.description ?? "";
   $("#pf-image").value = product?.imageUrl ?? "";
+  $("#pf-file").value = "";
+  $("#pf-image-hint").textContent = "Sans photo, une illustration de la catégorie s'affiche.";
+  renderPhotoPreview();
   $("#pf-active").checked = product?.active ?? true;
   renderProductOptions(product?.optionIds ?? []);
 
@@ -303,6 +306,80 @@ function fillProductForm(product) {
   $("#pf-cancel").hidden = !product;
   $("#product-error").hidden = true;
   if (product) $("#pf-name").focus();
+}
+
+/* ----- Photo du produit : lien en ligne ou photo importée depuis l'appareil ----- */
+
+const PHOTO_MAX_SIDE = 1600;        // pixels, côté le plus long
+const PHOTO_MAX_BYTES = 1_500_000;  // après réduction (le serveur refuse au-delà de 3 Mo)
+
+function renderPhotoPreview() {
+  const imageUrl = $("#pf-image").value.trim();
+  $("#pf-preview").innerHTML = productVisual({ imageUrl, category: $("#pf-category").value }, 72);
+  $("#pf-remove-image").hidden = !imageUrl;
+}
+
+const canvasToBlob = (canvas, type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+
+/**
+ * Réduit une photo de l'appareil avant l'envoi : 1600 px maximum, en WebP (ou JPEG si le
+ * navigateur ne sait pas produire de WebP). Une photo de téléphone de 5 Mo pèse ensuite ~200 Ko.
+ * Le sens de la photo (portrait / paysage) enregistré par l'appareil est respecté.
+ */
+async function shrinkPhoto(file) {
+  if (!file.type.startsWith("image/")) throw new Error("Choisissez une photo (JPEG, PNG, WebP…).");
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    throw new Error("Cette photo ne peut pas être lue ici. Essayez une photo JPEG ou PNG.");
+  }
+  const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff"; // fond blanc pour les PNG transparents
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  for (const quality of [0.85, 0.7, 0.55]) {
+    let blob = await canvasToBlob(canvas, "image/webp", quality);
+    if (blob?.type !== "image/webp") blob = await canvasToBlob(canvas, "image/jpeg", quality);
+    if (blob && blob.size <= PHOTO_MAX_BYTES) return blob;
+  }
+  throw new Error("Photo trop lourde, même réduite. Essayez-en une autre.");
+}
+
+async function importPhoto() {
+  const input = $("#pf-file");
+  const file = input.files?.[0];
+  if (!file) return;
+  const label = $("#pf-file-label");
+  const errorEl = $("#product-error");
+  errorEl.hidden = true;
+  input.disabled = true;
+  label.textContent = "Envoi de la photo…";
+  try {
+    const { url } = await store.uploadImage(await shrinkPhoto(file));
+    $("#pf-image").value = url;
+    renderPhotoPreview();
+    $("#pf-image-hint").textContent = "Photo importée. Pensez à enregistrer le produit.";
+  } catch (error) {
+    errorEl.textContent = error.message;
+    errorEl.hidden = false;
+  } finally {
+    input.disabled = false;
+    input.value = "";
+    label.textContent = "Importer depuis l'appareil";
+  }
+}
+
+function removePhoto() {
+  $("#pf-image").value = "";
+  $("#pf-image-hint").textContent = "Sans photo, une illustration de la catégorie s'affiche.";
+  renderPhotoPreview();
 }
 
 async function submitProduct(event) {
@@ -574,6 +651,10 @@ export function initAdmin(appHooks) {
   $("#login-form").addEventListener("submit", submitLogin);
   $("#product-form").addEventListener("submit", submitProduct);
   $("#pf-cancel").addEventListener("click", () => fillProductForm(null));
+  $("#pf-file").addEventListener("change", importPhoto);
+  $("#pf-remove-image").addEventListener("click", removePhoto);
+  $("#pf-image").addEventListener("input", renderPhotoPreview);
+  $("#pf-category").addEventListener("change", renderPhotoPreview);
   $("#option-form").addEventListener("submit", submitOption);
   $("#of-cancel").addEventListener("click", () => fillOptionForm(null));
   $("#of-type").addEventListener("change", showOptionTypeFields);

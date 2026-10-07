@@ -136,9 +136,18 @@
                 <textarea id="pf-description" maxlength="300" placeholder="Composition, taille, délai…"></textarea>
               </div>
               <div class="field">
-                <label for="pf-image">Lien de la photo (facultatif)</label>
-                <input id="pf-image" type="url" placeholder="https://…/photo.jpg">
-                <span class="hint">Sans photo, une illustration de la catégorie s'affiche.</span>
+                <span class="field-label">Photo (facultatif)</span>
+                <div class="photo-picker">
+                  <div class="thumb" id="pf-preview"></div>
+                  <div class="photo-actions">
+                    <input id="pf-file" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp,image/*">
+                    <label class="btn" for="pf-file" id="pf-file-label">Importer depuis l'appareil</label>
+                    <button class="btn" type="button" id="pf-remove-image" hidden>Retirer</button>
+                  </div>
+                </div>
+                <label for="pf-image">ou lien d'une photo en ligne</label>
+                <input id="pf-image" type="text" inputmode="url" autocomplete="off" placeholder="https://…/photo.jpg">
+                <span class="hint" id="pf-image-hint">Sans photo, une illustration de la catégorie s'affiche.</span>
               </div>
               <fieldset class="option-picker" id="pf-options">
                 <legend>Options proposées pour ce bouquet</legend>

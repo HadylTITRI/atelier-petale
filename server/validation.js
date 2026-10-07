@@ -11,6 +11,9 @@ import { HttpError, cleanLine, isRealDate, todayIn } from "./util.js";
 
 const bad = (message) => new HttpError(400, message);
 
+/** Adresse d'une photo importée depuis l'appareil (voir /images/ dans app.js). */
+export const IMAGE_PATH = /^\/images\/\d{1,10}$/;
+
 /** Texte obligatoire ou facultatif, avec longueur maximale. */
 function text(value, label, { max, required = false } = {}) {
   const clean = cleanLine(value);
@@ -137,7 +140,9 @@ export function validateProduct(body) {
     throw bad("Indiquez un prix supérieur à 0.");
   }
   const imageUrl = text(body.imageUrl, "Le lien de la photo", { max: 500 });
-  if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl)) throw bad("Le lien de la photo doit commencer par http:// ou https://.");
+  if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl) && !IMAGE_PATH.test(imageUrl)) {
+    throw bad("Le lien de la photo doit commencer par http:// ou https://.");
+  }
   return {
     name,
     category,

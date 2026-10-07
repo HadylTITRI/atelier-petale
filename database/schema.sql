@@ -60,6 +60,21 @@ CREATE TABLE IF NOT EXISTS product_options (
   CONSTRAINT fk_product_options_option FOREIGN KEY (option_id) REFERENCES `options` (id) ON DELETE CASCADE
 ) ENGINE = InnoDB;
 
+-- ---------- Photos importées ----------------------------------------------
+-- Photos envoyées depuis l'appareil de l'admin (déjà réduites par le navigateur), servies
+-- à l'adresse /images/<id>. Gardées en base plutôt que sur le disque : l'hébergement
+-- gratuit (Render) efface ses fichiers à chaque redémarrage. Une photo qu'aucun produit
+-- n'utilise depuis plus d'un jour est supprimée automatiquement.
+
+CREATE TABLE IF NOT EXISTS images (
+  id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  content_type  VARCHAR(20)  NOT NULL,                -- image/jpeg, image/png ou image/webp
+  data          MEDIUMBLOB   NOT NULL,
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_images_created (created_at)
+) ENGINE = InnoDB;
+
 -- ---------- Commandes -------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS orders (

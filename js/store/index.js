@@ -6,6 +6,7 @@
  *   listProducts({ includeHidden })   → Produit[]
  *   saveProduct(produit)              → Produit
  *   deleteProduct(id)
+ *   uploadImage(blob)                 → { url } (photo importée depuis l'appareil)
  *   listOptions({ includeHidden })    → Option[] (actives seulement, sauf includeHidden)
  *   saveOption(option)                → Option
  *   setOptionActive(id, actif)        → Option

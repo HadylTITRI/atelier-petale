@@ -253,6 +253,28 @@ export function createMysqlRepo(pool) {
       return result.affectedRows > 0;
     },
 
+    /* ---------- photos importées ---------- */
+
+    async createImage(contentType, data) {
+      const [result] = await pool.query("INSERT INTO images (content_type, data) VALUES (?, ?)", [contentType, data]);
+      return String(result.insertId);
+    },
+
+    /** { contentType, data } ou null. */
+    async getImage(id) {
+      const [[row]] = await pool.query("SELECT content_type, data FROM images WHERE id = ?", [Number(id)]);
+      return row ? { contentType: row.content_type, data: row.data } : null;
+    },
+
+    /** Supprime les photos qu'aucun produit n'utilise et importées il y a plus d'un jour. */
+    async deleteUnusedImages() {
+      await pool.query(
+        `DELETE FROM images
+         WHERE created_at < NOW() - INTERVAL 1 DAY
+           AND NOT EXISTS (SELECT 1 FROM products p WHERE p.image_url = CONCAT('/images/', images.id))`,
+      );
+    },
+
     /* ---------- commandes ---------- */
 
     /**

@@ -6,7 +6,8 @@ export function createMemoryRepo({ products = [], options = [], admins = [] } = 
   let nextProductId = 1;
   let nextOptionId = 1;
   let nextOrderId = 1;
-  const state = { products: [], options: [], orders: [], admins: [...admins], changes: 0 };
+  let nextImageId = 1;
+  const state = { products: [], options: [], orders: [], images: [], admins: [...admins], changes: 0 };
 
   const seed = (p) => ({
     id: String(nextProductId++), name: p.name, category: p.category ?? "bouquets", priceCents: p.priceCents,
@@ -82,6 +83,20 @@ export function createMemoryRepo({ products = [], options = [], admins = [] } = 
       // Comme ON DELETE CASCADE sur product_options.
       state.products.forEach((p) => (p.optionIds = p.optionIds.filter((optionId) => optionId !== id)));
       return state.options.length < before;
+    },
+
+    async createImage(contentType, data) {
+      const image = { id: String(nextImageId++), contentType, data: Buffer.from(data), createdAt: Date.now() };
+      state.images.push(image);
+      return image.id;
+    },
+    async getImage(id) {
+      const image = state.images.find((i) => i.id === id);
+      return image ? { contentType: image.contentType, data: image.data } : null;
+    },
+    async deleteUnusedImages() {
+      const dayAgo = Date.now() - 24 * 3600 * 1000;
+      state.images = state.images.filter((i) => i.createdAt >= dayAgo || state.products.some((p) => p.imageUrl === `/images/${i.id}`));
     },
 
     async createOrder(order, makeCode) {
